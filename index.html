@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BITWORKS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0f14; color: #cfe3f5;
+    font: 13px Consolas, 'Courier New', monospace; user-select: none; }
+  canvas#c { display: block; cursor: crosshair; }
+  #top { position: fixed; top: 0; left: 0; right: 0; height: 38px; display: flex; align-items: center; gap: 10px;
+    padding: 0 12px; background: rgba(8, 13, 19, 0.92); border-bottom: 1px solid #1d2b3a; }
+  #logo { font-weight: bold; letter-spacing: 3px; color: #ffc040; margin-right: 6px; }
+  button { font: inherit; color: #cfe3f5; background: #162231; border: 1px solid #2a3d52; border-radius: 4px;
+    padding: 4px 9px; cursor: pointer; }
+  button:hover { background: #1f3045; }
+  button.on { background: #2b4a6b; border-color: #5d8fc2; color: #fff; }
+  #status { color: #8fb1cf; }
+  #coords { margin-left: auto; color: #6f8ea8; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+    padding: 6px 10px 8px; background: rgba(8, 13, 19, 0.92); border-top: 1px solid #1d2b3a; }
+  .grp { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .grp .lbl { font-size: 10px; letter-spacing: 2px; color: #557089; }
+  .grp .row { display: flex; gap: 3px; }
+  .slot { position: relative; width: 40px; height: 40px; border: 1px solid #22344a; border-radius: 4px; background: #0e1720;
+    cursor: pointer; padding: 2px; }
+  .slot:hover { border-color: #4f7aa5; }
+  .slot.sel { border-color: #ffc040; box-shadow: 0 0 0 1px #ffc040; }
+  .slot canvas { width: 34px; height: 34px; display: block; }
+  .slot .key { position: absolute; left: 2px; top: 0; font-size: 9px; color: #7c97b0; }
+  #info { position: fixed; left: 12px; bottom: 82px; max-width: 420px; padding: 7px 10px; background: rgba(8, 13, 19, 0.85);
+    border: 1px solid #1d2b3a; border-radius: 4px; line-height: 1.45; pointer-events: none; }
+  #info b { color: #ffc040; }
+  #info .dim { color: #6f8ea8; }
+  #help { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); }
+  #help.show { display: flex; }
+  #help .box { width: min(720px, 94vw); max-height: 88vh; overflow: auto; background: #0e1720; border: 1px solid #2a3d52;
+    border-radius: 6px; padding: 18px 22px; line-height: 1.55; }
+  #help h2 { margin: 0 0 6px; color: #ffc040; letter-spacing: 3px; }
+  #help h3 { margin: 14px 0 4px; color: #8fc4ff; font-size: 13px; letter-spacing: 1px; }
+  #help kbd { background: #1c2b3c; border: 1px solid #34506e; border-radius: 3px; padding: 0 5px; color: #fff; }
+  #help .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  #toast { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); padding: 6px 14px; background: #1b2c40;
+    border: 1px solid #3d5d80; border-radius: 4px; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top">
+  <span id="logo">BITWORKS</span>
+  <button id="bRun" title="Space">❚❚ PAUSE</button>
+  <button id="bStep" title=". (period)">STEP</button>
+  <button id="bSlow" title="[">−</button>
+  <span id="speed">20 t/s</span>
+  <button id="bFast" title="]">+</button>
+  <span id="status"></span>
+  <span id="coords"></span>
+  <button id="bExport" title="Save your world to a file">EXPORT</button>
+  <button id="bImport" title="Load a world file">IMPORT</button>
+  <button id="bHelp" title="F1">? HELP</button>
+</div>
+<div id="bar"></div>
+<div id="info"></div>
+<div id="toast"></div>
+<input id="file" type="file" accept=".bitworks,.json" style="display:none">
+<div id="help"><div class="box">
+  <h2>BITWORKS</h2>
+  Build computers out of tiny blocks. Wires carry ON/OFF signals, gates do logic, LEDs show the result.
+  <div class="cols">
+  <div>
+  <h3>BUILDING</h3>
+  <kbd>Left click/drag</kbd> place block<br>
+  <kbd>Right click/drag</kbd> erase<br>
+  <kbd>Shift</kbd>+drag = straight line<br>
+  Click a block of the same type = rotate it<br>
+  <kbd>R</kbd> rotate (<kbd>Shift+R</kbd> back)<br>
+  <kbd>F</kbd> change setting of block under mouse<br>
+  &nbsp;&nbsp;(clock speed, LED color, buzzer note)<br>
+  <kbd>Q</kbd> pick the block under the mouse<br>
+  <kbd>1</kbd>–<kbd>0</kbd> quick select<br>
+  Click a <b>switch</b> or <b>button</b> to use it
+  <h3>COPY + PASTE</h3>
+  <kbd>Ctrl</kbd>+drag = select area<br>
+  <kbd>Ctrl+C</kbd> copy &nbsp;<kbd>Ctrl+X</kbd> cut &nbsp;<kbd>Del</kbd> delete<br>
+  <kbd>Ctrl+V</kbd> paste (<kbd>R</kbd> rotates, click places)<br>
+  <kbd>Ctrl+Z</kbd> undo &nbsp;<kbd>Ctrl+Y</kbd> redo &nbsp;<kbd>Esc</kbd> cancel
+  </div>
+  <div>
+  <h3>MOVING</h3>
+  <kbd>WASD</kbd>/arrows move (<kbd>Shift</kbd> = fast)<br>
+  <kbd>Middle mouse</kbd> drag to move<br>
+  <kbd>Mouse wheel</kbd> zoom<br>
+  <kbd>H</kbd> go home to 0,0 &nbsp;<kbd>G</kbd> grid
+  <h3>SIMULATION</h3>
+  <kbd>Space</kbd> pause / run<br>
+  <kbd>.</kbd> one tick at a time<br>
+  <kbd>[</kbd> <kbd>]</kbd> slower / faster<br>
+  <kbd>M</kbd> mute buzzers
+  <h3>HOW SIGNALS FLOW</h3>
+  Gates send out the <b>front</b> (the arrow).<br>
+  AND/OR/XOR… read <b>back + left + right</b>.<br>
+  NOT, DIODE and T flip-flop read only the <b>back</b>.<br>
+  Switches, buttons and clocks power <b>all 4 sides</b>.<br>
+  Every gate takes <b>1 tick</b>.
+  </div>
+  </div>
+  <p style="margin-top:14px;color:#6f8ea8">Your world saves by itself. Press <kbd>F1</kbd> or click anywhere to close.</p>
+</div></div>
+<script src="sim.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
