@@ -1,6 +1,6 @@
 // BITWORKS — drawing, controls and UI.
 'use strict';
-const { CS, CSH, CM, CN, DX, DY, T, NAMES, PER, SETTINGS, hasPort, World, Sim } = BW;
+const { CS, CSH, CM, CN, NL, DX, DY, T, NAMES, PER, SETTINGS, hasPort, canSend, canRecv, World, Sim } = BW;
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const $ = (id) => document.getElementById(id);
@@ -44,6 +44,8 @@ const PXLED = [];   // LEDs get their own table: 8 colors x 5 brightness
 for (let set = 0; set < 8 * LED_BRIGHT; set++) for (let on = 0; on < 2; on++) PXLED[(set << 1) | on] = pack(colorOf(T.LED, set, on));
 PX[(T.HEX << 4) | 1] = pack([255, 80, 50]);
 
+const LINK = 100;   // the link tool isn't a block, it gets its own number
+const nameOf = (t) => t === LINK ? 'LINK' : NAMES[t];
 const LABEL = { 6: '1', 7: 'NOT', 8: 'AND', 9: 'OR', 10: 'XOR', 11: 'NAND', 12: 'NOR', 13: 'XNOR', 14: 'DIO', 15: 'T', 16: 'D', 19: '♪' };
 const DESC = {
   1: 'carries a signal. Touching wires join up. Hold Alt for a separate wire.',
@@ -63,7 +65,11 @@ const DESC = {
   17: 'lights up when powered.',
   18: 'shows a digit 0–F. Top 1, right 2, bottom 4, left 8.',
   19: 'beeps while powered.',
+  [LINK]: 'click a block that sends, then one that receives. Connects only those two, any distance, any layer.',
 };
+// which layers a block touches: bit 0 = the one below, bit 1 = the one above
+const VNAME = ['no other layers', 'layer below only', 'layer above only', 'above + below'];
+const VCYCLE = [3, 1, 2, 0];
 function settingText(t, set) {
   if (t === T.CLOCK) { const p = PER[set % PER.length]; return 'every ' + p + ' tick' + (p > 1 ? 's' : ''); }
   if (t === T.LED) return LED_NAMES[set & 7] + (set >> 3 ? ', ' + Math.round(ledBright(set) * 100) + '%' : '');
@@ -85,6 +91,12 @@ function wireLine(g, on, w, z, path) {
 // arms = which sides a wire connects to. onV = the up/down signal of a crossing.
 function drawBlock(g, t, d, set, st, arms, sx, sy, z, onV) {
   const on = st & 1, cx = sx + z / 2, cy = sy + z / 2, w = Math.max(1.5, z * 0.2);
+  if (t === LINK) {   // dock icon: a free curved line between two dots
+    g.lineCap = 'round'; g.strokeStyle = css(WIRE_ON); g.lineWidth = z * 0.08;
+    g.beginPath(); g.moveTo(sx + z * 0.22, sy + z * 0.72); g.quadraticCurveTo(sx + z * 0.3, sy + z * 0.2, sx + z * 0.78, sy + z * 0.28); g.stroke();
+    g.fillStyle = '#d6dde8'; circle(g, sx + z * 0.22, sy + z * 0.72, z * 0.09); g.fill(); circle(g, sx + z * 0.78, sy + z * 0.28, z * 0.09); g.fill();
+    return;
+  }
   if (t === T.WIRE) {
     wireLine(g, on, w, z, () => {
       g.beginPath();
@@ -166,16 +178,24 @@ function drawBlock(g, t, d, set, st, arms, sx, sy, z, onV) {
     g.fillText(lab, cx, cy + z * 0.02);
   }
 }
+// little arrows in the corner: this block connects to the layer above (top) / below (bottom)
+function drawLayerMarks(g, up, down, sx, sy, z) {
+  const f = z * 0.1, x = sx + z * 0.86;
+  g.fillStyle = 'rgba(140,200,255,0.9)';
+  if (up) { g.beginPath(); g.moveTo(x, sy + z * 0.08); g.lineTo(x - f, sy + z * 0.08 + f); g.lineTo(x + f, sy + z * 0.08 + f); g.fill(); }
+  if (down) { g.beginPath(); g.moveTo(x, sy + z * 0.92); g.lineTo(x - f, sy + z * 0.92 - f); g.lineTo(x + f, sy + z * 0.92 - f); g.fill(); }
+}
 
 // ---------------------------------------------------------------- world + state
 const world = new World();
 const sim = new Sim(world);
-const cam = { x: 9, y: 5, z: 36 };
+const cam = { x: 9, y: 7, z: 34 };
 const tool = { t: T.WIRE, d: 1 };
 const toolSet = { 5: 4, 17: 0, 19: 0 };
+let toolVert = 3, layer = 0;
 const SPEEDS = [1, 2, 5, 10, 20, 40, 60, 120, 250, 500, 1000, 2500, 5000, 10000, Infinity];
 let speedI = 4, running = true, showGrid = true;
-let sel = null, clip = null, pasting = false, dockHover = 0;
+let sel = null, clip = null, pasting = false, dockHover = 0, linkFrom = null;
 const mouse = { x: 0, y: 0, cx: 0, cy: 0, inside: false };
 let stroke = null;
 const keys = {};
@@ -183,8 +203,11 @@ const keys = {};
 function cellAtScreen(sx, sy) {
   return [Math.floor(cam.x + (sx - W / 2) / cam.z), Math.floor(cam.y + (sy - H / 2) / cam.z)];
 }
+const typeAt = (x, y, l = layer) => world.type(x, y, l);
 
 // ---------------------------------------------------------------- undo
+// A group is one action (one drag, one paste...). Each step in it is
+//   {k:'c'} a block changed, {k:'L+'} a link was made, {k:'L-'} a link was removed.
 const undoStack = [], redoStack = [];
 let group = null;
 function beginGroup() { group = []; }
@@ -192,46 +215,74 @@ function endGroup() {
   if (group && group.length) { undoStack.push(group); if (undoStack.length > 300) undoStack.shift(); redoStack.length = 0; markSave(); }
   group = null;
 }
-function doSet(x, y, t, data, st) {
-  const old = world.set(x, y, t, data, st);
-  if (old && group) group.push(x, y, old[0], old[1], old[2], t, t ? data : 0, t ? st : 0);
+function doSet(x, y, l, t, data, st, vert) {
+  const old = world.set(x, y, t, data, st, l, vert);
+  if (old && group) {
+    group.push({ k: 'c', x, y, l, o: old, n: t ? [t, data, st, vert] : [0, 0, 0, 0] });
+    if (old.links) for (const L of old.links) group.push({ k: 'L-', L });
+  }
   return old;
 }
+function addLinkU(L) { world.addLink(L); if (group) group.push({ k: 'L+', L }); }
+function removeLinkU(L) { if (world.removeLink(L) && group) group.push({ k: 'L-', L }); }
 function undo() {
   const g = undoStack.pop(); if (!g) return;
-  for (let i = g.length - 8; i >= 0; i -= 8) world.set(g[i], g[i + 1], g[i + 2], g[i + 3], g[i + 4]);
+  for (let i = g.length - 1; i >= 0; i--) {
+    const o = g[i];
+    if (o.k === 'c') world.set(o.x, o.y, o.o[0], o.o[1], o.o[2], o.l, o.o[3]);
+    else if (o.k === 'L+') world.removeLink(o.L);
+  }
+  for (const o of g) if (o.k === 'L-') world.addLink(o.L);   // put links back after their blocks are back
   redoStack.push(g); markSave(); toast('Undo');
 }
 function redo() {
   const g = redoStack.pop(); if (!g) return;
-  for (let i = 0; i < g.length; i += 8) world.set(g[i], g[i + 1], g[i + 5], g[i + 6], g[i + 7]);
+  for (const o of g) {
+    if (o.k === 'c') world.set(o.x, o.y, o.n[0], o.n[1], o.n[2], o.l, o.n[3]);
+    else if (o.k === 'L+') world.addLink(o.L);
+    else world.removeLink(o.L);
+  }
   undoStack.push(g); markSave(); toast('Redo');
 }
 
 // ---------------------------------------------------------------- editing
 const toolData = () => tool.d | ((toolSet[tool.t] || 0) << 2);
 function placeAt(x, y, firstClick) {
-  const t = world.type(x, y);
-  if (!t) { doSet(x, y, tool.t, toolData(), 0); return; }
+  const t = typeAt(x, y);
+  if (!t) { doSet(x, y, layer, tool.t, toolData(), 0, toolVert); return; }
   if (!firstClick) return;          // dragging never destroys things
   if (t === tool.t) {               // clicking the same kind of block rotates it
     if (t === T.WIRE || t === T.CROSS) return;
-    const d = world.data(x, y);
-    doSet(x, y, t, (d & ~3) | (((d & 3) + 1) & 3), world.st(x, y));
-  } else doSet(x, y, tool.t, toolData(), 0);
+    const d = world.data(x, y, layer);
+    doSet(x, y, layer, t, (d & ~3) | (((d & 3) + 1) & 3), world.st(x, y, layer), world.vert(x, y, layer));
+  } else doSet(x, y, layer, tool.t, toolData(), 0, toolVert);
 }
-function eraseAt(x, y) { doSet(x, y, 0, 0, 0); }
+function eraseAt(x, y) { doSet(x, y, layer, 0, 0, 0, 0); }
+function lineCells(x0, y0, x1, y1, fn) {   // every cell between two points, no gaps
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  for (let n = 0; n < 100000; n++) {
+    fn(x0, y0);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x0 += sx; }
+    if (e2 < dx) { err += dx; y0 += sy; }
+  }
+}
+function straightEnd(s) {   // shift-line snaps to horizontal or vertical
+  return Math.abs(s.bx - s.ax) >= Math.abs(s.by - s.ay) ? [s.bx, s.ay] : [s.ax, s.by];
+}
 
 // ---- separate wires (hold Alt): each wire only connects to the cells you dragged through
 const SEP = 64;
 function sepPlace(x, y) {   // returns true if a new wire was placed
-  if (world.type(x, y)) return false;
-  doSet(x, y, T.WIRE, SEP, 0); return true;
+  if (typeAt(x, y)) return false;
+  doSet(x, y, layer, T.WIRE, SEP, 0, toolVert); return true;
 }
 function sepOpen(x, y, s) {   // let a separate wire connect on side s
-  if (world.type(x, y) !== T.WIRE) return;
-  const d = world.data(x, y);
-  if (d & SEP) doSet(x, y, T.WIRE, d | (1 << (2 + s)), world.st(x, y));
+  if (typeAt(x, y) !== T.WIRE) return;
+  const d = world.data(x, y, layer);
+  if (d & SEP) doSet(x, y, layer, T.WIRE, d | (1 << (2 + s)), world.st(x, y, layer), world.vert(x, y, layer));
 }
 function sideTo(ax, ay, bx, by) { return bx > ax ? 1 : bx < ax ? 3 : by > ay ? 2 : 0; }
 function path4(x0, y0, x1, y1, fn) {   // like lineCells but never steps diagonally
@@ -251,74 +302,104 @@ function sepStep(st, ax, ay, bx, by) {   // the drag moved one cell, from a to b
   st.lastDir = s;
 }
 function sepFinish(st, x, y) {
-  if (!st.moved) { if (st.fresh) doSet(x, y, T.WIRE, 0, 0); return; }   // just a click: normal wire
-  if (st.lastFresh) sepOpen(x, y, st.lastDir);                            // the end connects straight ahead
-}
-function lineCells(x0, y0, x1, y1, fn) {   // every cell between two points, no gaps
-  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
-  for (let n = 0; n < 100000; n++) {
-    fn(x0, y0);
-    if (x0 === x1 && y0 === y1) break;
-    const e2 = 2 * err;
-    if (e2 > -dy) { err -= dy; x0 += sx; }
-    if (e2 < dx) { err += dx; y0 += sy; }
-  }
-}
-function straightEnd(s) {   // shift-line snaps to horizontal or vertical
-  return Math.abs(s.bx - s.ax) >= Math.abs(s.by - s.ay) ? [s.bx, s.ay] : [s.ax, s.by];
+  if (!st.moved) { if (st.fresh) doSet(x, y, layer, T.WIRE, 0, 0, toolVert); return; }   // just a click: normal wire
+  if (st.lastFresh) sepOpen(x, y, st.lastDir);                                          // the end connects straight ahead
 }
 
-// visit every non-empty cell inside a rectangle (skips empty chunks entirely)
-function forCells(x0, y0, x1, y1, fn) {
+// ---- links
+function linkClick(x, y) {
+  const t = typeAt(x, y);
+  if (!linkFrom) {
+    if (!t) return;
+    if (!canSend(t)) { toast(nameOf(t) + " can't send a signal — start the link at a wire, input or gate"); return; }
+    linkFrom = [x, y, layer];
+    return;
+  }
+  if (!t) { linkFrom = null; return; }   // clicking empty space cancels
+  if (linkFrom[0] === x && linkFrom[1] === y && linkFrom[2] === layer) { linkFrom = null; return; }
+  if (!canRecv(t)) { toast(nameOf(t) + " can't receive a signal"); return; }
+  beginGroup(); addLinkU([linkFrom[0], linkFrom[1], linkFrom[2], x, y, layer]); endGroup();
+  linkFrom = null;
+}
+function linkNearMouse() {   // the link closest to the mouse (within 8 px) on this layer
+  const z = cam.z, ox = W / 2 - cam.x * z, oy = H / 2 - cam.y * z;
+  let best = null, bd = 8;
+  for (const L of world.links) {
+    if (L[2] !== layer && L[5] !== layer) continue;
+    const ax = ox + (L[0] + 0.5) * z, ay = oy + (L[1] + 0.5) * z, bx = ox + (L[3] + 0.5) * z, by = oy + (L[4] + 0.5) * z;
+    const vx = bx - ax, vy = by - ay, len = vx * vx + vy * vy;
+    const u = len ? Math.max(0, Math.min(1, ((mouse.x - ax) * vx + (mouse.y - ay) * vy) / len)) : 0;
+    const d = Math.hypot(ax + vx * u - mouse.x, ay + vy * u - mouse.y);
+    if (d < bd) { bd = d; best = L; }
+  }
+  return best;
+}
+
+// visit every non-empty cell inside a rectangle on one layer (skips empty chunks entirely)
+function forCells(l, x0, y0, x1, y1, fn) {
   for (let cy = y0 >> CSH; cy <= y1 >> CSH; cy++) for (let cx = x0 >> CSH; cx <= x1 >> CSH; cx++) {
-    const c = world.ch(cx, cy); if (!c) continue;
+    const c = world.ch(cx, cy, l); if (!c) continue;
     const lx0 = Math.max(0, x0 - cx * CS), lx1 = Math.min(CM, x1 - cx * CS);
     const ly0 = Math.max(0, y0 - cy * CS), ly1 = Math.min(CM, y1 - cy * CS);
     for (let ly = ly0; ly <= ly1; ly++) for (let lx = lx0; lx <= lx1; lx++) {
       const i = (ly << CSH) | lx;
-      if (c.type[i]) fn(cx * CS + lx, cy * CS + ly, c.type[i], c.data[i], c.st[i]);
+      if (c.type[i]) fn(cx * CS + lx, cy * CS + ly, c.type[i], c.data[i], c.st[i], c.vert[i]);
     }
   }
 }
 function selRect() {
   return [Math.min(sel.x0, sel.x1), Math.min(sel.y0, sel.y1), Math.max(sel.x0, sel.x1), Math.max(sel.y0, sel.y1)];
 }
+const inRect = (x, y, r) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+// copying takes ALL layers inside the box, so multi-layer builds copy in one go
 function copySel() {
   if (!sel) return false;
-  const [x0, y0, x1, y1] = selRect(), cells = [];
-  forCells(x0, y0, x1, y1, (x, y, t, d, s) => cells.push(x - x0, y - y0, t, d, s));
-  clip = { w: x1 - x0 + 1, h: y1 - y0 + 1, cells };
-  toast('Copied ' + cells.length / 5 + ' blocks');
+  const r = selRect(), [x0, y0, x1, y1] = r, cells = [], links = [];
+  for (let l = 0; l < NL; l++) forCells(l, x0, y0, x1, y1, (x, y, t, d, s, v) => cells.push(x - x0, y - y0, l - layer, t, d, s, v));
+  for (const L of world.links) if (inRect(L[0], L[1], r) && inRect(L[3], L[4], r))
+    links.push([L[0] - x0, L[1] - y0, L[2] - layer, L[3] - x0, L[4] - y0, L[5] - layer]);
+  clip = { w: x1 - x0 + 1, h: y1 - y0 + 1, cells, links };
+  toast('Copied ' + cells.length / 7 + ' blocks' + (links.length ? ' + ' + links.length + ' links' : ''));
   return true;
 }
 function deleteSel() {
   if (!sel) return;
   const [x0, y0, x1, y1] = selRect(), list = [];
-  forCells(x0, y0, x1, y1, (x, y) => list.push(x, y));
+  for (let l = 0; l < NL; l++) forCells(l, x0, y0, x1, y1, (x, y) => list.push(x, y, l));
   beginGroup();
-  for (let i = 0; i < list.length; i += 2) eraseAt(list[i], list[i + 1]);
+  for (let i = 0; i < list.length; i += 3) doSet(list[i], list[i + 1], list[i + 2], 0, 0, 0, 0);
   endGroup();
 }
 function rotateClip() {
-  const c = clip.cells;
-  for (let i = 0; i < c.length; i += 5) {
+  const c = clip.cells, h = clip.h;
+  for (let i = 0; i < c.length; i += 7) {
     const dx = c[i], dy = c[i + 1];
-    c[i] = clip.h - 1 - dy; c[i + 1] = dx;
-    if (c[i + 2] === T.WIRE) {   // separate wire: turn its allowed sides too
-      const m = (c[i + 3] >> 2) & 15;
-      c[i + 3] = (c[i + 3] & SEP) | ((((m << 1) | (m >> 3)) & 15) << 2);
-    } else c[i + 3] = (c[i + 3] & ~3) | (((c[i + 3] & 3) + 1) & 3);
+    c[i] = h - 1 - dy; c[i + 1] = dx;
+    if (c[i + 3] === T.WIRE) {   // separate wire: turn its allowed sides too
+      const m = (c[i + 4] >> 2) & 15;
+      c[i + 4] = (c[i + 4] & SEP) | ((((m << 1) | (m >> 3)) & 15) << 2);
+    } else c[i + 4] = (c[i + 4] & ~3) | (((c[i + 4] & 3) + 1) & 3);
+  }
+  for (const L of clip.links) {
+    const a = [h - 1 - L[1], L[0]], b = [h - 1 - L[4], L[3]];
+    L[0] = a[0]; L[1] = a[1]; L[3] = b[0]; L[4] = b[1];
   }
   const w = clip.w; clip.w = clip.h; clip.h = w;
 }
 function pasteAt(x, y) {
   beginGroup();
   const c = clip.cells;
-  for (let i = 0; i < c.length; i += 5) doSet(x + c[i], y + c[i + 1], c[i + 2], c[i + 3], c[i + 4]);
+  for (let i = 0; i < c.length; i += 7) {
+    const l = layer + c[i + 2];
+    if (l >= 0 && l < NL) doSet(x + c[i], y + c[i + 1], l, c[i + 3], c[i + 4], c[i + 5], c[i + 6]);
+  }
+  for (const L of clip.links) {
+    const la = layer + L[2], lb = layer + L[5];
+    if (la >= 0 && la < NL && lb >= 0 && lb < NL) addLinkU([x + L[0], y + L[1], la, x + L[3], y + L[4], lb]);
+  }
   endGroup();
 }
-// F changes clock speed / LED color / buzzer note, B changes LED brightness
+// F: change clock speed / LED color / buzzer note,  B: LED brightness
 function nextSetting(t, set, dir, bright) {
   if (t === T.LED) {
     if (bright) return (set & 7) | ((((set >> 3) + dir + LED_BRIGHT) % LED_BRIGHT) << 3);
@@ -328,17 +409,43 @@ function nextSetting(t, set, dir, bright) {
   return (set + dir + n) % n;
 }
 function configure(dir, bright) {
-  const x = mouse.cx, y = mouse.cy, t = world.type(x, y);
+  const x = mouse.cx, y = mouse.cy, t = typeAt(x, y);
   if (bright && t !== T.LED && tool.t !== T.LED) return;
   if (SETTINGS[t] && (!bright || t === T.LED)) {
-    const d = world.data(x, y), set = nextSetting(t, d >> 2, dir, bright);
-    beginGroup(); doSet(x, y, t, (d & 3) | (set << 2), world.st(x, y)); endGroup();
+    const d = world.data(x, y, layer), set = nextSetting(t, d >> 2, dir, bright);
+    beginGroup(); doSet(x, y, layer, t, (d & 3) | (set << 2), world.st(x, y, layer), world.vert(x, y, layer)); endGroup();
     toolSet[t] = set; drawIcons();
-    toast(NAMES[t] + ': ' + settingText(t, set));
+    toast(nameOf(t) + ': ' + settingText(t, set));
   } else if (SETTINGS[tool.t]) {
     toolSet[tool.t] = nextSetting(tool.t, toolSet[tool.t] || 0, dir, bright); drawIcons();
-    toast(NAMES[tool.t] + ': ' + settingText(tool.t, toolSet[tool.t]));
+    toast(nameOf(tool.t) + ': ' + settingText(tool.t, toolSet[tool.t]));
   }
+}
+// V: which layers the block under the mouse (or the next one you place) touches
+function cycleVert() {
+  const x = mouse.cx, y = mouse.cy, t = mouse.inside ? typeAt(x, y) : 0;
+  if (t) {
+    const v = VCYCLE[(VCYCLE.indexOf(world.vert(x, y, layer)) + 1) % 4];
+    beginGroup(); doSet(x, y, layer, t, world.data(x, y, layer), world.st(x, y, layer), v); endGroup();
+    toolVert = v;
+    toast(nameOf(t) + ' touches: ' + VNAME[v]);
+  } else {
+    toolVert = VCYCLE[(VCYCLE.indexOf(toolVert) + 1) % 4];
+    toast('New blocks touch: ' + VNAME[toolVert]);
+  }
+}
+function pickBlock() {   // middle-click / P: grab the block under the mouse
+  const t = typeAt(mouse.cx, mouse.cy);
+  if (!t) return;
+  const d = world.data(mouse.cx, mouse.cy, layer);
+  tool.d = d & 3; toolVert = world.vert(mouse.cx, mouse.cy, layer);
+  if (SETTINGS[t]) toolSet[t] = d >> 2;
+  selectTool(t);
+}
+function setLayer(l) {
+  layer = Math.max(0, Math.min(NL - 1, l));
+  $('layerNum').textContent = layer + 1;
+  $('bUp').disabled = layer === NL - 1; $('bDown').disabled = layer === 0;
 }
 
 // ---------------------------------------------------------------- sound (buzzers)
@@ -387,15 +494,85 @@ function paintChunk(c) {
 
 const DETAIL = 10;   // pixels per cell where we switch from "map view" to drawn blocks
 function wireOn(c, i) { const n = c.net[i]; return n >= 0 && n < sim.nNets && sim.netOn[n] > 0 ? 1 : 0; }
-function portAt(x, y, s) {   // does the cell at x,y have a connection on side s?
-  const c = world.ch(x >> CSH, y >> CSH); if (!c) return 0;
+function portAt(x, y, l, s) {   // does the cell at x,y have a connection on side s?
+  const c = world.ch(x >> CSH, y >> CSH, l); if (!c) return 0;
   const i = ((y & CM) << CSH) | (x & CM), t = c.type[i];
   return t ? hasPort(t, c.data[i], s) : 0;
 }
-function wireArms(x, y, data) {
+function wireArms(x, y, l, data) {
   let arms = 0;
-  for (let s = 0; s < 4; s++) if (hasPort(T.WIRE, data, s) && portAt(x + DX[s], y + DY[s], (s + 2) & 3)) arms |= 1 << s;
+  for (let s = 0; s < 4; s++) if (hasPort(T.WIRE, data, s) && portAt(x + DX[s], y + DY[s], l, (s + 2) & 3)) arms |= 1 << s;
   return arms;
+}
+function visibleChunks(l, cx0, cy0, cx1, cy1) {
+  const out = [];
+  if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) < world.chunks.size) {
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) { const c = world.ch(cx, cy, l); if (c) out.push(c); }
+  } else {
+    for (const c of world.chunks.values()) if (c.l === l && c.cx >= cx0 && c.cx <= cx1 && c.cy >= cy0 && c.cy <= cy1) out.push(c);
+  }
+  return out;
+}
+function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
+  const chunks = visibleChunks(l, x0 >> CSH, y0 >> CSH, x1 >> CSH, y1 >> CSH);
+  if (z < DETAIL) {
+    // MAP VIEW: every chunk is a tiny 64x64 picture, one pixel per block, stretched up
+    ctx.imageSmoothingEnabled = false;
+    for (const c of chunks) {
+      if (c.dirty || !c.canvas) paintChunk(c);
+      const sx = Math.round(ox + c.cx * CS * z), sy = Math.round(oy + c.cy * CS * z);
+      const ex = Math.round(ox + (c.cx + 1) * CS * z), ey = Math.round(oy + (c.cy + 1) * CS * z);
+      ctx.drawImage(c.canvas, sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy));
+    }
+    return;
+  }
+  // BLOCK VIEW: draw every visible block properly
+  for (const c of chunks) {
+    const bx = c.cx * CS, by = c.cy * CS;
+    const cA = main && z >= 16 ? world.ch(c.cx, c.cy, l + 1) : null, cB = main && z >= 16 ? world.ch(c.cx, c.cy, l - 1) : null;
+    const lx0 = Math.max(0, x0 - bx), lx1 = Math.min(CM, x1 - bx), ly0 = Math.max(0, y0 - by), ly1 = Math.min(CM, y1 - by);
+    for (let ly = ly0; ly <= ly1; ly++) for (let lx = lx0; lx <= lx1; lx++) {
+      const i = (ly << CSH) | lx, t = c.type[i];
+      if (!t) continue;
+      const x = bx + lx, y = by + ly, sx = ox + x * z, sy = oy + y * z;
+      if (t === 1) drawBlock(ctx, 1, 0, 0, wireOn(c, i), wireArms(x, y, l, c.data[i]), sx, sy, z);
+      else if (t === 2) drawBlock(ctx, 2, 0, 0, wireOn(c, i), 0, sx, sy, z, sim.netIsOn(c.netV ? c.netV[i] : -1));
+      else drawBlock(ctx, t, c.data[i] & 3, c.data[i] >> 2, c.st[i], 0, sx, sy, z);
+      if (cA || cB) {
+        const v = c.vert[i];
+        const up = cA && (v & 2) && cA.type[i] && (cA.vert[i] & 1), down = cB && (v & 1) && cB.type[i] && (cB.vert[i] & 2);
+        if (up || down) drawLayerMarks(ctx, up, down, sx, sy, z);
+      }
+    }
+  }
+}
+function drawLinks(z, ox, oy) {
+  const links = world.links, fresh = sim.ver === world.ver;
+  const w = Math.max(1.5, z * 0.12);
+  ctx.lineCap = 'round';
+  for (let j = 0; j < links.length; j++) {
+    const L = links[j];
+    if (L[2] !== layer && L[5] !== layer) continue;
+    const ax = ox + (L[0] + 0.5) * z, ay = oy + (L[1] + 0.5) * z, bx = ox + (L[3] + 0.5) * z, by = oy + (L[4] + 0.5) * z;
+    if (Math.max(ax, bx) < -20 || Math.min(ax, bx) > W + 20 || Math.max(ay, by) < -20 || Math.min(ay, by) > H + 20) continue;
+    const on = fresh && sim.netIsOn(sim.linkNet[j]), bad = fresh && !sim.linkOk[j];
+    const other = L[2] !== L[5];   // goes to another layer: dashed
+    if (other) ctx.setLineDash([w * 3, w * 2]);
+    if (on && z >= 6) { ctx.strokeStyle = 'rgba(255,200,70,0.2)'; ctx.lineWidth = w * 3; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
+    ctx.strokeStyle = bad ? '#e0504a' : on ? css(WIRE_ON) : '#7d8aa0'; ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.setLineDash([]);
+    if (z >= 6) {   // a ring where it starts, a dot where it ends
+      ctx.fillStyle = ctx.strokeStyle;
+      circle(ctx, bx, by, w * 1.3); ctx.fill();
+      ctx.lineWidth = Math.max(1, w * 0.6); circle(ctx, ax, ay, w * 1.4); ctx.stroke();
+      if (other && z >= 14) {   // say which layer the far end is on
+        const fx = L[2] === layer ? bx : ax, fy = L[2] === layer ? by : ay, fl = L[2] === layer ? L[5] : L[2];
+        ctx.font = `600 ${Math.max(10, z * 0.28) | 0}px system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        ctx.fillStyle = '#8cc8ff'; ctx.fillText('L' + (fl + 1), fx + z * 0.3, fy - z * 0.25);
+      }
+    }
+  }
 }
 
 function render() {
@@ -421,49 +598,27 @@ function render() {
     }
   }
 
-  const cx0 = x0 >> CSH, cx1 = x1 >> CSH, cy0 = y0 >> CSH, cy1 = y1 >> CSH;
-  const visChunks = [];
-  if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) < world.chunks.size) {
-    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) { const c = world.ch(cx, cy); if (c) visChunks.push(c); }
-  } else {
-    for (const c of world.chunks.values()) if (c.cx >= cx0 && c.cx <= cx1 && c.cy >= cy0 && c.cy <= cy1) visChunks.push(c);
-  }
-
-  if (z < DETAIL) {
-    // MAP VIEW: every chunk is a tiny 64x64 picture, one pixel per block, stretched up
-    ctx.imageSmoothingEnabled = false;
-    for (const c of visChunks) {
-      if (c.dirty || !c.canvas) paintChunk(c);
-      const sx = Math.round(ox + c.cx * CS * z), sy = Math.round(oy + c.cy * CS * z);
-      const ex = Math.round(ox + (c.cx + 1) * CS * z), ey = Math.round(oy + (c.cy + 1) * CS * z);
-      ctx.drawImage(c.canvas, sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy));
-    }
-  } else {
-    // BLOCK VIEW: draw every visible block properly
-    for (const c of visChunks) {
-      const bx = c.cx * CS, by = c.cy * CS;
-      const lx0 = Math.max(0, x0 - bx), lx1 = Math.min(CM, x1 - bx), ly0 = Math.max(0, y0 - by), ly1 = Math.min(CM, y1 - by);
-      for (let ly = ly0; ly <= ly1; ly++) for (let lx = lx0; lx <= lx1; lx++) {
-        const i = (ly << CSH) | lx, t = c.type[i];
-        if (!t) continue;
-        const x = bx + lx, y = by + ly, sx = ox + x * z, sy = oy + y * z;
-        if (t === 1) drawBlock(ctx, 1, 0, 0, wireOn(c, i), wireArms(x, y, c.data[i]), sx, sy, z);
-        else if (t === 2) drawBlock(ctx, 2, 0, 0, wireOn(c, i), 0, sx, sy, z, sim.netIsOn(c.netV ? c.netV[i] : -1));
-        else drawBlock(ctx, t, c.data[i] & 3, c.data[i] >> 2, c.st[i], 0, sx, sy, z);
-      }
-    }
-  }
+  // the layer below shows through faintly, then the layer you're on
+  if (layer > 0) { ctx.globalAlpha = 0.18; drawLayer(layer - 1, z, ox, oy, x0, y0, x1, y1, false); ctx.globalAlpha = 1; }
+  drawLayer(layer, z, ox, oy, x0, y0, x1, y1, true);
+  drawLinks(z, ox, oy);
 
   // ghosts + selection
   const hx = mouse.cx, hy = mouse.cy;
+  if (linkFrom) {   // a link waiting for its second block
+    const ax = ox + (linkFrom[0] + 0.5) * z, ay = oy + (linkFrom[1] + 0.5) * z;
+    ctx.strokeStyle = 'rgba(255,200,70,0.7)'; ctx.lineWidth = Math.max(1.5, z * 0.1); ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(mouse.x, mouse.y); ctx.stroke(); ctx.setLineDash([]);
+  }
   if (pasting && clip && mouse.inside) {
     ctx.globalAlpha = 0.5;
-    const c = clip.cells, n = Math.min(c.length, 5 * 40000);
-    for (let i = 0; i < n; i += 5) {
+    const c = clip.cells, n = Math.min(c.length, 7 * 40000);
+    for (let i = 0; i < n; i += 7) {
+      if (c[i + 2] !== 0) continue;   // ghost shows the blocks for this layer
       const sx = ox + (hx + c[i]) * z, sy = oy + (hy + c[i + 1]) * z;
       if (sx < -z || sy < -z || sx > W || sy > H) continue;
-      if (z >= DETAIL) drawBlock(ctx, c[i + 2], c[i + 3] & 3, c[i + 3] >> 2, 0, c[i + 2] === 1 ? 15 : 0, sx, sy, z);
-      else { ctx.fillStyle = css(colorOf(c[i + 2], c[i + 3] >> 2, 0)); ctx.fillRect(sx, sy, Math.max(1, z), Math.max(1, z)); }
+      if (z >= DETAIL) drawBlock(ctx, c[i + 3], c[i + 4] & 3, c[i + 4] >> 2, 0, c[i + 3] === 1 ? 15 : 0, sx, sy, z);
+      else { ctx.fillStyle = css(colorOf(c[i + 3], c[i + 4] >> 2, 0)); ctx.fillRect(sx, sy, Math.max(1, z), Math.max(1, z)); }
     }
     ctx.globalAlpha = 1;
     ctx.strokeStyle = 'rgba(120,180,255,0.8)'; ctx.setLineDash([6, 4]); ctx.lineWidth = 1;
@@ -473,14 +628,14 @@ function render() {
     ctx.fillStyle = stroke.erase ? 'rgba(255,90,80,0.3)' : 'rgba(255,200,70,0.3)';
     ctx.fillRect(ox + Math.min(stroke.ax, ex) * z, oy + Math.min(stroke.ay, ey) * z, (Math.abs(ex - stroke.ax) + 1) * z, (Math.abs(ey - stroke.ay) + 1) * z);
   } else if (mouse.inside && !stroke) {
-    const sx = ox + hx * z, sy = oy + hy * z, t = world.type(hx, hy);
-    if (!t && z >= DETAIL) {
+    const sx = ox + hx * z, sy = oy + hy * z, t = typeAt(hx, hy);
+    if (!t && z >= DETAIL && tool.t !== LINK) {
       ctx.globalAlpha = 0.35;
-      drawBlock(ctx, tool.t, tool.d, toolSet[tool.t] || 0, 0, tool.t === 1 ? wireArms(hx, hy, keys.alt ? 64 : 0) : 0, sx, sy, z);
+      drawBlock(ctx, tool.t, tool.d, toolSet[tool.t] || 0, 0, tool.t === 1 ? wireArms(hx, hy, layer, keys.alt ? SEP : 0) : 0, sx, sy, z);
       ctx.globalAlpha = 1;
     }
     if (z >= 3) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = tool.t === LINK && t ? 'rgba(255,200,70,0.8)' : 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1;
       rrect(ctx, sx + 0.5, sy + 0.5, z - 1, z - 1, z * 0.2); ctx.stroke();
     }
   }
@@ -494,7 +649,7 @@ function render() {
 
 // ---------------------------------------------------------------- the dock (block picker)
 const GROUPS = [
-  [T.WIRE, T.CROSS],
+  [T.WIRE, T.CROSS, LINK],
   [T.SWITCH, T.BUTTON, T.CLOCK, T.CONST],
   [T.NOT, T.AND, T.OR, T.XOR, T.NAND, T.NOR, T.XNOR, T.DIODE],
   [T.TFF, T.DFF],
@@ -509,6 +664,7 @@ GROUPS.forEach((types, gi) => {
     const c = document.createElement('canvas'); c.width = c.height = 68; s.appendChild(c);
     const hk = HOTKEYS.indexOf(t);
     if (hk >= 0) { const k = document.createElement('span'); k.className = 'key'; k.textContent = (hk + 1) % 10; s.appendChild(k); }
+    if (t === LINK) { const k = document.createElement('span'); k.className = 'key'; k.textContent = 'L'; s.appendChild(k); }
     s.onclick = () => selectTool(t);
     s.onmouseenter = () => { dockHover = t; };
     s.onmouseleave = () => { dockHover = 0; };
@@ -525,7 +681,7 @@ function drawIcons() {
   }
 }
 function selectTool(t) {
-  tool.t = t;
+  tool.t = t; linkFrom = null;
   for (const k in slots) slots[k].el.classList.toggle('sel', +k === t);
   pasting = false; drawIcons();
 }
@@ -537,16 +693,17 @@ cv.addEventListener('mousedown', (e) => {
   ensureAudio(); hideHelp(); $('menu').classList.remove('show');
   const [x, y] = cellAtScreen(e.offsetX, e.offsetY);
   mouse.cx = x; mouse.cy = y;
-  if (e.button === 1) { e.preventDefault(); stroke = { kind: 'pan', sx: e.clientX, sy: e.clientY }; return; }
+  if (e.button === 1) { e.preventDefault(); stroke = { kind: 'pan', sx: e.clientX, sy: e.clientY, moved: 0 }; return; }
   if (pasting && clip) {
     if (e.button === 0) pasteAt(x, y); else { pasting = false; }
     return;
   }
   if (e.button === 0) {
     if (e.ctrlKey || e.metaKey) { sel = { x0: x, y0: y, x1: x, y1: y }; stroke = { kind: 'select' }; return; }
-    const t = world.type(x, y);
-    if (t === T.SWITCH) { sim.toggle(x, y); markSave(); return; }
-    if (t === T.BUTTON) { sim.press(x, y, 1); stroke = { kind: 'button', x, y }; return; }
+    if (tool.t === LINK) { sel = null; linkClick(x, y); return; }   // with the link tool, clicks make links
+    const t = typeAt(x, y);
+    if (t === T.SWITCH) { sim.toggle(x, y, layer); markSave(); return; }
+    if (t === T.BUTTON) { sim.press(x, y, 1, layer); stroke = { kind: 'button', x, y, l: layer }; return; }
     sel = null;
     beginGroup();
     const sep = e.altKey && tool.t === T.WIRE;
@@ -556,6 +713,11 @@ cv.addEventListener('mousedown', (e) => {
     stroke = { kind: 'place', lx: x, ly: y };
   } else if (e.button === 2) {
     sel = null;
+    if (linkFrom) { linkFrom = null; return; }
+    if (tool.t === LINK) {   // with the link tool, right-click removes a link first
+      const L = linkNearMouse();
+      if (L) { beginGroup(); removeLinkU(L); endGroup(); return; }
+    }
     beginGroup();
     if (e.shiftKey) { stroke = { kind: 'line', ax: x, ay: y, bx: x, by: y, erase: true }; return; }
     eraseAt(x, y);
@@ -570,6 +732,7 @@ addEventListener('mousemove', (e) => {
   mouse.cx = x; mouse.cy = y;
   if (!stroke) return;
   if (stroke.kind === 'pan') {
+    stroke.moved += Math.abs(e.clientX - stroke.sx) + Math.abs(e.clientY - stroke.sy);
     cam.x -= (e.clientX - stroke.sx) / cam.z; cam.y -= (e.clientY - stroke.sy) / cam.z;
     stroke.sx = e.clientX; stroke.sy = e.clientY;
   } else if (stroke.kind === 'place' || stroke.kind === 'erase') {
@@ -585,7 +748,8 @@ addEventListener('mousemove', (e) => {
 });
 addEventListener('mouseup', () => {
   if (!stroke) return;
-  if (stroke.kind === 'button') sim.press(stroke.x, stroke.y, 0);
+  if (stroke.kind === 'pan' && stroke.moved < 4) pickBlock();   // middle-click without dragging = pick
+  if (stroke.kind === 'button') sim.press(stroke.x, stroke.y, 0, stroke.l);
   if (stroke.kind === 'line') {
     const [ex, ey] = straightEnd(stroke);
     if (stroke.sep) {
@@ -633,12 +797,13 @@ addEventListener('keydown', (e) => {
   }
   else if (k === 'f') configure(e.shiftKey ? -1 : 1, false);
   else if (k === 'b') configure(e.shiftKey ? -1 : 1, true);
-  else if (k === 'q') {
-    const t = world.type(mouse.cx, mouse.cy);
-    if (t) { const d = world.data(mouse.cx, mouse.cy); tool.d = d & 3; if (SETTINGS[t]) toolSet[t] = d >> 2; selectTool(t); }
-  }
+  else if (k === 'v') cycleVert();
+  else if (k === 'e' || k === 'pageup') setLayer(layer + 1);
+  else if (k === 'q' || k === 'pagedown') setLayer(layer - 1);
+  else if (k === 'p') pickBlock();
+  else if (k === 'l') selectTool(LINK);
   else if (k === 'delete' || k === 'backspace') { if (sel) { deleteSel(); sel = null; } }
-  else if (k === 'escape') { sel = null; pasting = false; hideHelp(); $('menu').classList.remove('show'); }
+  else if (k === 'escape') { sel = null; pasting = false; linkFrom = null; hideHelp(); $('menu').classList.remove('show'); }
   else if (k === 'h') { cam.x = 0; cam.y = 0; }
   else if (k === 'g') showGrid = !showGrid;
   else if (k === 'm') { muted = !muted; for (let n = 0; n < 24; n++) setVoice(n); toast(muted ? 'Buzzers muted' : 'Buzzers on'); }
@@ -656,33 +821,37 @@ function setSpeed(i) {
 $('bRun').onclick = () => setRunning(!running);
 $('bSlow').onclick = () => setSpeed(speedI - 1);
 $('bFast').onclick = () => setSpeed(speedI + 1);
+$('bUp').onclick = () => setLayer(layer + 1);
+$('bDown').onclick = () => setLayer(layer - 1);
 $('bMenu').onclick = () => $('menu').classList.toggle('show');
 $('bHelp').onclick = () => { $('menu').classList.remove('show'); toggleHelp(); };
 $('help').onclick = hideHelp;
 $('bNew').onclick = () => {
   $('menu').classList.remove('show');
   if (!confirm('Start a new empty world? Your current world will be gone (export it first if you want to keep it).')) return;
-  world.clear(); undoStack.length = 0; redoStack.length = 0; cam.x = 0; cam.y = 0; save();
+  world.clear(); undoStack.length = 0; redoStack.length = 0; cam.x = 0; cam.y = 0; setLayer(0); save();
 };
 function toggleHelp() { $('help').classList.toggle('show'); }
 function hideHelp() { $('help').classList.remove('show'); }
 let toastT = 0;
-function toast(msg) { const el = $('toast'); el.textContent = msg; el.style.opacity = 1; toastT = 1.6; }
+function toast(msg) { const el = $('toast'); el.textContent = msg; el.style.opacity = 1; toastT = 1.8; }
 
 // ---------------------------------------------------------------- saving
 const SAVE_KEY = 'bitworks-save-v1';
 let saveDue = 0;
 function markSave() { if (!saveDue) saveDue = 2; }
 function saveText() {
-  return JSON.stringify({ v: 1, cam, tool, toolSet, speedI, tick: sim.tick, chunks: BW.encodeWorld(world) });
+  return JSON.stringify({ v: 2, cam, layer, tool, toolSet, toolVert, speedI, tick: sim.tick, chunks: BW.encodeWorld(world), links: world.links });
 }
 function loadText(txt) {
   const s = JSON.parse(txt);
-  BW.decodeWorld(world, s.chunks || []);
+  BW.decodeWorld(world, s.chunks || [], s.links);
   if (s.cam) Object.assign(cam, s.cam);
   if (s.toolSet) Object.assign(toolSet, s.toolSet);
+  if (s.toolVert !== undefined) toolVert = s.toolVert & 3;
   if (s.tool) { tool.d = s.tool.d & 3; selectTool(s.tool.t || 1); }
   if (s.speedI !== undefined) setSpeed(s.speedI);
+  setLayer(s.layer || 0);
   undoStack.length = 0; redoStack.length = 0;
 }
 function save() {
@@ -708,21 +877,25 @@ $('file').onchange = async (e) => {
 let loaded = false;
 try { const s = localStorage.getItem(SAVE_KEY); if (s) { loadText(s); loaded = true; } } catch (e) { }
 if (!loaded) { BW.buildDemo(world); $('help').classList.add('show'); }
-setSpeed(speedI); setRunning(true); drawIcons();
+setSpeed(speedI); setRunning(true); setLayer(layer); drawIcons();
 
 // ---------------------------------------------------------------- the hint line above the dock
 function hintText() {
-  if (pasting) return '<b>Pasting</b> — click to place · R rotates · Esc cancels';
+  if (pasting) return '<b>Pasting</b> (all layers) — click to place · R rotates · Esc cancels';
+  if (linkFrom) return '<b>Link</b> — now click the block that should receive it (switch layers with Q/E) · Esc cancels';
+  if (sel && !stroke) return '<b>Selected</b> (all layers) — Ctrl C copy · Ctrl X cut · Del delete · Esc cancel';
   if (keys.alt && tool.t === T.WIRE) return '<b>Separate wire</b> — only connects to the cells you drag through';
-  if (sel && !stroke) return '<b>Selected</b> — Ctrl C copy · Ctrl X cut · Del delete · Esc cancel';
-  let t, set;
+  let t, set, v = toolVert, placed = false;
   if (dockHover) { t = dockHover; set = toolSet[t] || 0; }
-  else if (mouse.inside && world.type(mouse.cx, mouse.cy)) { t = world.type(mouse.cx, mouse.cy); set = world.data(mouse.cx, mouse.cy) >> 2; }
-  else { t = tool.t; set = toolSet[t] || 0; }
+  else if (mouse.inside && typeAt(mouse.cx, mouse.cy) && tool.t !== LINK) {
+    t = typeAt(mouse.cx, mouse.cy); set = world.data(mouse.cx, mouse.cy, layer) >> 2; v = world.vert(mouse.cx, mouse.cy, layer); placed = true;
+  } else { t = tool.t; set = toolSet[t] || 0; }
+  if (t === LINK) return '<b>Link</b> — ' + DESC[LINK] + ' Right-click a link to remove it.';
   const s = settingText(t, set);
   let h = `<b>${NAMES[t][0] + NAMES[t].slice(1).toLowerCase()}</b>${s ? ' (' + s + ')' : ''} — ${DESC[t]}`;
   if (t === T.LED) h += ' · F color · B brightness';
   else if (SETTINGS[t]) h += ' · F to change';
+  if (placed || v !== 3) h += ` · touches ${VNAME[v]} (V)`;
   return h;
 }
 
@@ -760,7 +933,7 @@ function frame(now) {
   if (tpsTimer >= 1) {
     tpsShown = Math.round(tpsCount / tpsTimer); tpsCount = 0; tpsTimer = 0;
     if ($('menu').classList.contains('show'))
-      $('stats').innerHTML = `${tpsShown} ticks/s · tick ${sim.tick}<br>${sim.nComp} parts · ${sim.nNets} wires · ${world.chunks.size} chunks`;
+      $('stats').innerHTML = `${tpsShown} ticks/s · tick ${sim.tick}<br>${sim.nComp} parts · ${sim.nNets} wires · ${world.links.length} links<br>${world.chunks.size} chunks`;
   }
 
   render();

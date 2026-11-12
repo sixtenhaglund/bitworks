@@ -37,6 +37,12 @@
   .slot canvas { width: 34px; height: 34px; display: block; }
   .slot .key { position: absolute; right: 3px; bottom: 1px; font-size: 9px; color: #5d6878; }
 
+  #layers { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
+    align-items: center; padding: 4px; gap: 2px; }
+  #layers button:disabled { opacity: 0.25; cursor: default; }
+  #layerNum { font-size: 20px; font-weight: 700; color: #fff; line-height: 1; font-variant-numeric: tabular-nums; }
+  #layers .lbl { font-size: 9px; letter-spacing: 1.5px; color: #6c7889; margin-bottom: 2px; }
+
   #hint { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 5px 12px; border-radius: 8px;
     background: rgba(17, 21, 29, 0.75); color: #9aa6b8; white-space: nowrap; pointer-events: none; max-width: 94vw;
     overflow: hidden; text-overflow: ellipsis; }
@@ -78,6 +84,13 @@
   </div>
 </div>
 
+<div id="layers" class="panel" title="Layers (Q down, E up)">
+  <button id="bUp" class="icon" title="Layer up (E)">▲</button>
+  <div id="layerNum">1</div>
+  <div class="lbl">LAYER</div>
+  <button id="bDown" class="icon" title="Layer down (Q)">▼</button>
+</div>
+
 <div id="hint"></div>
 <div id="dock" class="panel"></div>
 <div id="coords"></div>
@@ -95,13 +108,17 @@
     <kbd>Alt</kbd>+drag wire that doesn't join others<br>
     <kbd>F</kbd> change color / speed / note<br>
     <kbd>B</kbd> LED brightness<br>
-    <kbd>Q</kbd> pick block under mouse<br>
+    <kbd>Middle click</kbd> / <kbd>P</kbd> pick block under mouse<br>
     <kbd>1</kbd>–<kbd>0</kbd> quick pick<br>
     Click a switch or button to use it.
     <h3>COPY</h3>
     <kbd>Ctrl</kbd>+drag select &nbsp; <kbd>Ctrl C</kbd> <kbd>Ctrl X</kbd> <kbd>Del</kbd><br>
     <kbd>Ctrl V</kbd> paste (<kbd>R</kbd> rotates)<br>
     <kbd>Ctrl Z</kbd> undo &nbsp; <kbd>Ctrl Y</kbd> redo
+    <h3>LINKS</h3>
+    <kbd>L</kbd> link tool: click the sender, then the receiver.<br>
+    Any distance, any layer, only those 2 blocks.<br>
+    Right-click a link to remove it.
   </div>
   <div>
     <h3>MOVE</h3>
@@ -110,6 +127,10 @@
     <h3>RUN</h3>
     <kbd>Space</kbd> pause &nbsp; <kbd>.</kbd> one tick<br>
     <kbd>[</kbd> <kbd>]</kbd> speed &nbsp; <kbd>M</kbd> mute
+    <h3>LAYERS (16)</h3>
+    <kbd>Q</kbd> layer down &nbsp; <kbd>E</kbd> layer up<br>
+    Blocks touch the layer above and below.<br>
+    <kbd>V</kbd> choose: above + below / below / above / none
     <h3>HOW SIGNALS FLOW</h3>
     Gates output where the <b>arrow</b> points.<br>
     They read from the back and sides.<br>
