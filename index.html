@@ -40,6 +40,8 @@
   #layers { position: fixed; left: 12px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
     align-items: center; padding: 4px; gap: 2px; }
   #layers button:disabled { opacity: 0.25; cursor: default; }
+  #bXray { margin-top: 4px; font-size: 15px; filter: grayscale(1); opacity: 0.6; }
+  #bXray.on { filter: none; opacity: 1; background: rgba(140, 200, 255, 0.18); box-shadow: inset 0 0 0 1px rgba(140, 200, 255, 0.6); }
   #layerNum { font-size: 20px; font-weight: 700; color: #fff; line-height: 1; font-variant-numeric: tabular-nums; }
   #layers .lbl { font-size: 9px; letter-spacing: 1.5px; color: #6c7889; margin-bottom: 2px; }
 
@@ -89,6 +91,7 @@
   <div id="layerNum">1</div>
   <div class="lbl">LAYER</div>
   <button id="bDown" class="icon" title="Layer down (Q)">▼</button>
+  <button id="bXray" class="icon" title="See through all layers (X)">👁</button>
 </div>
 
 <div id="hint"></div>
@@ -128,7 +131,7 @@
     <kbd>Space</kbd> pause &nbsp; <kbd>.</kbd> one tick<br>
     <kbd>[</kbd> <kbd>]</kbd> speed &nbsp; <kbd>M</kbd> mute
     <h3>LAYERS (16)</h3>
-    <kbd>Q</kbd> layer down &nbsp; <kbd>E</kbd> layer up<br>
+    <kbd>Q</kbd> layer down &nbsp; <kbd>E</kbd> layer up &nbsp; <kbd>X</kbd> see through all<br>
     Blocks touch the layer above and below.<br>
     <kbd>V</kbd> choose: above + below / below / above / none
     <h3>HOW SIGNALS FLOW</h3>

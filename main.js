@@ -192,7 +192,7 @@ const sim = new Sim(world);
 const cam = { x: 9, y: 7, z: 34 };
 const tool = { t: T.WIRE, d: 1 };
 const toolSet = { 5: 4, 17: 0, 19: 0 };
-let toolVert = 3, layer = 0;
+let toolVert = 3, layer = 0, xray = false;   // xray = see through all layers
 const SPEEDS = [1, 2, 5, 10, 20, 40, 60, 120, 250, 500, 1000, 2500, 5000, 10000, Infinity];
 let speedI = 4, running = true, showGrid = true;
 let sel = null, clip = null, pasting = false, dockHover = 0, linkFrom = null;
@@ -552,7 +552,9 @@ function drawLinks(z, ox, oy) {
   ctx.lineCap = 'round';
   for (let j = 0; j < links.length; j++) {
     const L = links[j];
-    if (L[2] !== layer && L[5] !== layer) continue;
+    const mine = L[2] === layer || L[5] === layer;
+    if (!mine && !xray) continue;
+    ctx.globalAlpha = mine ? 1 : 0.35;
     const ax = ox + (L[0] + 0.5) * z, ay = oy + (L[1] + 0.5) * z, bx = ox + (L[3] + 0.5) * z, by = oy + (L[4] + 0.5) * z;
     if (Math.max(ax, bx) < -20 || Math.min(ax, bx) > W + 20 || Math.max(ay, by) < -20 || Math.min(ay, by) > H + 20) continue;
     const on = fresh && sim.netIsOn(sim.linkNet[j]), bad = fresh && !sim.linkOk[j];
@@ -573,6 +575,11 @@ function drawLinks(z, ox, oy) {
       }
     }
   }
+  ctx.globalAlpha = 1;
+}
+function setXray(v) {
+  xray = v; $('bXray').classList.toggle('on', v);
+  toast(v ? 'X-ray on: seeing through all layers' : 'X-ray off');
 }
 
 function render() {
@@ -598,8 +605,15 @@ function render() {
     }
   }
 
-  // the layer below shows through faintly, then the layer you're on
-  if (layer > 0) { ctx.globalAlpha = 0.18; drawLayer(layer - 1, z, ox, oy, x0, y0, x1, y1, false); ctx.globalAlpha = 1; }
+  // X-ray: every other layer see-through (fainter the further away), else just the one below
+  if (xray) {
+    for (let l = 0; l < NL; l++) {
+      if (l === layer) continue;
+      ctx.globalAlpha = Math.max(0.1, 0.45 - 0.07 * Math.abs(l - layer));
+      drawLayer(l, z, ox, oy, x0, y0, x1, y1, false);
+    }
+    ctx.globalAlpha = 1;
+  } else if (layer > 0) { ctx.globalAlpha = 0.18; drawLayer(layer - 1, z, ox, oy, x0, y0, x1, y1, false); ctx.globalAlpha = 1; }
   drawLayer(layer, z, ox, oy, x0, y0, x1, y1, true);
   drawLinks(z, ox, oy);
 
@@ -801,6 +815,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'e' || k === 'pageup') setLayer(layer + 1);
   else if (k === 'q' || k === 'pagedown') setLayer(layer - 1);
   else if (k === 'p') pickBlock();
+  else if (k === 'x') setXray(!xray);
   else if (k === 'l') selectTool(LINK);
   else if (k === 'delete' || k === 'backspace') { if (sel) { deleteSel(); sel = null; } }
   else if (k === 'escape') { sel = null; pasting = false; linkFrom = null; hideHelp(); $('menu').classList.remove('show'); }
@@ -823,6 +838,7 @@ $('bSlow').onclick = () => setSpeed(speedI - 1);
 $('bFast').onclick = () => setSpeed(speedI + 1);
 $('bUp').onclick = () => setLayer(layer + 1);
 $('bDown').onclick = () => setLayer(layer - 1);
+$('bXray').onclick = () => setXray(!xray);
 $('bMenu').onclick = () => $('menu').classList.toggle('show');
 $('bHelp').onclick = () => { $('menu').classList.remove('show'); toggleHelp(); };
 $('help').onclick = hideHelp;
