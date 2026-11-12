@@ -35,8 +35,12 @@ function inMask(t, d) {
   if (t >= 17) return 15;
   return 0;
 }
-function hasPort(t, d, s) {
-  if (t === T.WIRE || t === T.CROSS) return 1;
+// data = the whole settings byte. A "separate" wire (bit 6 set) only connects on the
+// sides switched on in bits 2-5; a normal wire connects everywhere.
+function hasPort(t, data, s) {
+  if (t === T.WIRE) return (data & 64) ? (data >> (2 + s)) & 1 : 1;
+  if (t === T.CROSS) return 1;
+  const d = data & 3;
   return ((outMask(t, d) | inMask(t, d)) >> s) & 1;
 }
 
@@ -141,7 +145,7 @@ class Sim {
     const portNode = (c, i, s) => {
       const t = c.type[i];
       if (!t) return -1;
-      if (t === 1) return c.net[i];
+      if (t === 1) { const d = c.data[i]; return (d & 64) && !((d >> (2 + s)) & 1) ? -1 : c.net[i]; }
       if (t === 2) return (s & 1) ? c.net[i] : c.netV[i];
       const k = c.net[i];
       return (compOut[k] >= 0 && ((outMask(t, c.data[i] & 3) >> s) & 1)) ? compOut[k] : -1;
@@ -156,16 +160,17 @@ class Sim {
       const ce = w.ch(c.cx + 1, c.cy), cs = w.ch(c.cx, c.cy + 1), ty = c.type;
       for (let i = 0; i < CN; i++) {
         if (!ty[i]) continue;
-        const x = i & CM, y = i >> CSH;
+        // things only join through wires: two switches side by side stay separate
+        const x = i & CM, y = i >> CSH, aw = ty[i] <= 2;
         let a = portNode(c, i, 1);
         if (a >= 0) {
           const b = x < CM ? portNode(c, i + 1, 3) : (ce ? portNode(ce, i - CM, 3) : -1);
-          if (b >= 0) union(a, b);
+          if (b >= 0 && (aw || (x < CM ? ty[i + 1] : ce.type[i - CM]) <= 2)) union(a, b);
         }
         a = portNode(c, i, 2);
         if (a >= 0) {
           const b = y < CM ? portNode(c, i + CS, 0) : (cs ? portNode(cs, x, 0) : -1);
-          if (b >= 0) union(a, b);
+          if (b >= 0 && (aw || (y < CM ? ty[i + CS] : cs.type[x]) <= 2)) union(a, b);
         }
       }
     }

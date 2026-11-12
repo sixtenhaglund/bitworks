@@ -46,7 +46,7 @@ PX[(T.HEX << 4) | 1] = pack([255, 80, 50]);
 
 const LABEL = { 6: '1', 7: 'NOT', 8: 'AND', 9: 'OR', 10: 'XOR', 11: 'NAND', 12: 'NOR', 13: 'XNOR', 14: 'DIO', 15: 'T', 16: 'D', 19: '♪' };
 const DESC = {
-  1: 'carries a signal. Touching wires join up.',
+  1: 'carries a signal. Touching wires join up. Hold Alt for a separate wire.',
   2: 'two wires cross here without touching.',
   3: 'click it to flip on and off.',
   4: 'on only while you hold it down.',
@@ -215,11 +215,45 @@ function placeAt(x, y, firstClick) {
   if (!t) { doSet(x, y, tool.t, toolData(), 0); return; }
   if (!firstClick) return;          // dragging never destroys things
   if (t === tool.t) {               // clicking the same kind of block rotates it
+    if (t === T.WIRE || t === T.CROSS) return;
     const d = world.data(x, y);
     doSet(x, y, t, (d & ~3) | (((d & 3) + 1) & 3), world.st(x, y));
   } else doSet(x, y, tool.t, toolData(), 0);
 }
 function eraseAt(x, y) { doSet(x, y, 0, 0, 0); }
+
+// ---- separate wires (hold Alt): each wire only connects to the cells you dragged through
+const SEP = 64;
+function sepPlace(x, y) {   // returns true if a new wire was placed
+  if (world.type(x, y)) return false;
+  doSet(x, y, T.WIRE, SEP, 0); return true;
+}
+function sepOpen(x, y, s) {   // let a separate wire connect on side s
+  if (world.type(x, y) !== T.WIRE) return;
+  const d = world.data(x, y);
+  if (d & SEP) doSet(x, y, T.WIRE, d | (1 << (2 + s)), world.st(x, y));
+}
+function sideTo(ax, ay, bx, by) { return bx > ax ? 1 : bx < ax ? 3 : by > ay ? 2 : 0; }
+function path4(x0, y0, x1, y1, fn) {   // like lineCells but never steps diagonally
+  let n = 0;
+  while ((x0 !== x1 || y0 !== y1) && n++ < 100000) {
+    const ax = x0, ay = y0;
+    if (Math.abs(x1 - x0) >= Math.abs(y1 - y0)) x0 += Math.sign(x1 - x0); else y0 += Math.sign(y1 - y0);
+    fn(ax, ay, x0, y0);
+  }
+}
+function sepStep(st, ax, ay, bx, by) {   // the drag moved one cell, from a to b
+  const s = sideTo(ax, ay, bx, by);
+  st.lastFresh = sepPlace(bx, by);
+  if (!st.moved && st.fresh) sepOpen(ax, ay, (s + 2) & 3);   // the start also connects straight back
+  st.moved = true;
+  sepOpen(ax, ay, s); sepOpen(bx, by, (s + 2) & 3);
+  st.lastDir = s;
+}
+function sepFinish(st, x, y) {
+  if (!st.moved) { if (st.fresh) doSet(x, y, T.WIRE, 0, 0); return; }   // just a click: normal wire
+  if (st.lastFresh) sepOpen(x, y, st.lastDir);                            // the end connects straight ahead
+}
 function lineCells(x0, y0, x1, y1, fn) {   // every cell between two points, no gaps
   const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
   let err = dx - dy;
@@ -271,7 +305,10 @@ function rotateClip() {
   for (let i = 0; i < c.length; i += 5) {
     const dx = c[i], dy = c[i + 1];
     c[i] = clip.h - 1 - dy; c[i + 1] = dx;
-    c[i + 3] = (c[i + 3] & ~3) | (((c[i + 3] & 3) + 1) & 3);
+    if (c[i + 2] === T.WIRE) {   // separate wire: turn its allowed sides too
+      const m = (c[i + 3] >> 2) & 15;
+      c[i + 3] = (c[i + 3] & SEP) | ((((m << 1) | (m >> 3)) & 15) << 2);
+    } else c[i + 3] = (c[i + 3] & ~3) | (((c[i + 3] & 3) + 1) & 3);
   }
   const w = clip.w; clip.w = clip.h; clip.h = w;
 }
@@ -353,11 +390,11 @@ function wireOn(c, i) { const n = c.net[i]; return n >= 0 && n < sim.nNets && si
 function portAt(x, y, s) {   // does the cell at x,y have a connection on side s?
   const c = world.ch(x >> CSH, y >> CSH); if (!c) return 0;
   const i = ((y & CM) << CSH) | (x & CM), t = c.type[i];
-  return t ? hasPort(t, c.data[i] & 3, s) : 0;
+  return t ? hasPort(t, c.data[i], s) : 0;
 }
-function wireArms(x, y) {
+function wireArms(x, y, data) {
   let arms = 0;
-  for (let s = 0; s < 4; s++) if (portAt(x + DX[s], y + DY[s], (s + 2) & 3)) arms |= 1 << s;
+  for (let s = 0; s < 4; s++) if (hasPort(T.WIRE, data, s) && portAt(x + DX[s], y + DY[s], (s + 2) & 3)) arms |= 1 << s;
   return arms;
 }
 
@@ -410,7 +447,7 @@ function render() {
         const i = (ly << CSH) | lx, t = c.type[i];
         if (!t) continue;
         const x = bx + lx, y = by + ly, sx = ox + x * z, sy = oy + y * z;
-        if (t === 1) drawBlock(ctx, 1, 0, 0, wireOn(c, i), wireArms(x, y), sx, sy, z);
+        if (t === 1) drawBlock(ctx, 1, 0, 0, wireOn(c, i), wireArms(x, y, c.data[i]), sx, sy, z);
         else if (t === 2) drawBlock(ctx, 2, 0, 0, wireOn(c, i), 0, sx, sy, z, sim.netIsOn(c.netV ? c.netV[i] : -1));
         else drawBlock(ctx, t, c.data[i] & 3, c.data[i] >> 2, c.st[i], 0, sx, sy, z);
       }
@@ -439,7 +476,7 @@ function render() {
     const sx = ox + hx * z, sy = oy + hy * z, t = world.type(hx, hy);
     if (!t && z >= DETAIL) {
       ctx.globalAlpha = 0.35;
-      drawBlock(ctx, tool.t, tool.d, toolSet[tool.t] || 0, 0, tool.t === 1 ? wireArms(hx, hy) : 0, sx, sy, z);
+      drawBlock(ctx, tool.t, tool.d, toolSet[tool.t] || 0, 0, tool.t === 1 ? wireArms(hx, hy, keys.alt ? 64 : 0) : 0, sx, sy, z);
       ctx.globalAlpha = 1;
     }
     if (z >= 3) {
@@ -512,7 +549,9 @@ cv.addEventListener('mousedown', (e) => {
     if (t === T.BUTTON) { sim.press(x, y, 1); stroke = { kind: 'button', x, y }; return; }
     sel = null;
     beginGroup();
-    if (e.shiftKey) { stroke = { kind: 'line', ax: x, ay: y, bx: x, by: y, erase: false }; return; }
+    const sep = e.altKey && tool.t === T.WIRE;
+    if (e.shiftKey) { stroke = { kind: 'line', ax: x, ay: y, bx: x, by: y, erase: false, sep }; return; }
+    if (sep) { e.preventDefault(); stroke = { kind: 'place', lx: x, ly: y, sep, fresh: sepPlace(x, y), moved: false }; return; }
     placeAt(x, y, true);
     stroke = { kind: 'place', lx: x, ly: y };
   } else if (e.button === 2) {
@@ -534,7 +573,10 @@ addEventListener('mousemove', (e) => {
     cam.x -= (e.clientX - stroke.sx) / cam.z; cam.y -= (e.clientY - stroke.sy) / cam.z;
     stroke.sx = e.clientX; stroke.sy = e.clientY;
   } else if (stroke.kind === 'place' || stroke.kind === 'erase') {
-    if (x !== stroke.lx || y !== stroke.ly) {
+    if ((x !== stroke.lx || y !== stroke.ly) && stroke.sep) {
+      path4(stroke.lx, stroke.ly, x, y, (ax, ay, bx, by) => sepStep(stroke, ax, ay, bx, by));
+      stroke.lx = x; stroke.ly = y;
+    } else if (x !== stroke.lx || y !== stroke.ly) {
       lineCells(stroke.lx, stroke.ly, x, y, stroke.kind === 'place' ? (a, b) => placeAt(a, b, false) : eraseAt);
       stroke.lx = x; stroke.ly = y;
     }
@@ -546,8 +588,13 @@ addEventListener('mouseup', () => {
   if (stroke.kind === 'button') sim.press(stroke.x, stroke.y, 0);
   if (stroke.kind === 'line') {
     const [ex, ey] = straightEnd(stroke);
-    lineCells(stroke.ax, stroke.ay, ex, ey, stroke.erase ? eraseAt : (a, b) => placeAt(a, b, false));
+    if (stroke.sep) {
+      const st = { fresh: sepPlace(stroke.ax, stroke.ay), moved: false };
+      path4(stroke.ax, stroke.ay, ex, ey, (ax, ay, bx, by) => sepStep(st, ax, ay, bx, by));
+      sepFinish(st, ex, ey);
+    } else lineCells(stroke.ax, stroke.ay, ex, ey, stroke.erase ? eraseAt : (a, b) => placeAt(a, b, false));
   }
+  if (stroke.kind === 'place' && stroke.sep) sepFinish(stroke, stroke.lx, stroke.ly);
   endGroup();
   stroke = null;
 });
@@ -565,6 +612,7 @@ addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
   const k = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
   keys[k] = true;
+  if (k === 'alt') { e.preventDefault(); return; }
   if (k === 'f1' || k === '?') { e.preventDefault(); toggleHelp(); return; }
   if (ctrl) {
     if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -596,7 +644,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'm') { muted = !muted; for (let n = 0; n < 24; n++) setVoice(n); toast(muted ? 'Buzzers muted' : 'Buzzers on'); }
   else if (/^[0-9]$/.test(k)) selectTool(HOTKEYS[(+k + 9) % 10]);
 });
-addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; if (e.key === 'Alt') e.preventDefault(); });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
 // ---------------------------------------------------------------- panels + menu
@@ -665,6 +713,7 @@ setSpeed(speedI); setRunning(true); drawIcons();
 // ---------------------------------------------------------------- the hint line above the dock
 function hintText() {
   if (pasting) return '<b>Pasting</b> — click to place · R rotates · Esc cancels';
+  if (keys.alt && tool.t === T.WIRE) return '<b>Separate wire</b> — only connects to the cells you drag through';
   if (sel && !stroke) return '<b>Selected</b> — Ctrl C copy · Ctrl X cut · Del delete · Esc cancel';
   let t, set;
   if (dockHover) { t = dockHover; set = toolSet[t] || 0; }
