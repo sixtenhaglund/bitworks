@@ -541,29 +541,75 @@ sim.onBuzz = (n, d) => { buzzCount[n] += d; setVoice(n); };
 sim.onBuzzReset = (b) => { for (let n = 0; n < 24; n++) { buzzCount[n] = b[n]; setVoice(n); } };
 
 // ---------------------------------------------------------------- rendering
-// Every chunk keeps two tiny 64x64 pictures, one pixel per block, redrawn only when something in it changed:
+// Every chunk keeps two small pictures ("atlases", 96x64), redrawn only when something in it changed:
 //  - canvas: what the blocks look like from far away (the map view)
-//  - lcanvas: only the LIGHT - lit LEDs, lit hex displays and (faintly) powered wires - for the glow (see drawGlow)
+//  - lcanvas: only the LIGHT - lit LEDs, lit hex displays and (faintly) powered wires - for the glow
+// Each atlas holds the chunk at 64x64 (one pixel per block) on the left, and shrunk versions on the right
+// (32, 16, 8, 4, 2, 1 pixels across). Far away, the shrunk version that fits the zoom is drawn.
+// SHRINKING MIXES LIGHT LIKE REAL LIGHT (Sixten: "it didn't blend into white"): the light of the blocks that become one
+// pixel is ADDED - its color is the sum of their colors (red + green + blue LEDs = white, red + green = yellow) and its
+// brightness how bright they are on average. Like the tiny red, green and blue dots of a real screen.
+const MIP_OFF = [0, 4096, 5120, 5376, 5440, 5456, 5460], MIP_N = 5461;
+const mip = { lr: new Float32Array(MIP_N), lg: new Float32Array(MIP_N), lb: new Float32Array(MIP_N), ps: new Float32Array(MIP_N), pm: new Float32Array(MIP_N),
+  br: new Float32Array(MIP_N), bg: new Float32Array(MIP_N), bb: new Float32Array(MIP_N), oc: new Float32Array(MIP_N), nl: new Float32Array(MIP_N) };
+// where shrink level k sits in an atlas: x, y, size
+const mipRect = (k) => k === 0 ? [0, 0, 64] : [64, 64 - 2 * (64 >> k), 64 >> k];
+const AW = 96;
+const rgba = (r, g, b, a) => ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
 function paintChunk(c) {
   if (!c.canvas) {
-    c.canvas = document.createElement('canvas'); c.canvas.width = c.canvas.height = CS;
-    c.g = c.canvas.getContext('2d'); c.img = c.g.createImageData(CS, CS); c.px = new Uint32Array(c.img.data.buffer);
-    c.lcanvas = document.createElement('canvas'); c.lcanvas.width = c.lcanvas.height = CS;
-    c.lg = c.lcanvas.getContext('2d'); c.limg = c.lg.createImageData(CS, CS); c.lpx = new Uint32Array(c.limg.data.buffer);
+    c.canvas = document.createElement('canvas'); c.canvas.width = AW; c.canvas.height = CS;
+    c.g = c.canvas.getContext('2d'); c.img = c.g.createImageData(AW, CS); c.px = new Uint32Array(c.img.data.buffer);
+    c.lcanvas = document.createElement('canvas'); c.lcanvas.width = AW; c.lcanvas.height = CS;
+    c.lg = c.lcanvas.getContext('2d'); c.limg = c.lg.createImageData(AW, CS); c.lpx = new Uint32Array(c.limg.data.buffer);
     c.lit = 0;
   }
   const px = c.px, lp = c.lpx, ty = c.type, da = c.data, st = c.st, net = c.net, nOn = sim.netOn, nn = sim.nNets;
+  const { lr, lg, lb, ps, pm, br, bg, bb, oc, nl } = mip;
   let lit = 0;
+  // full size: one pixel per block
   for (let i = 0; i < CN; i++) {
-    const t = ty[i];
-    if (!t) { px[i] = 0; lp[i] = 0; continue; }
+    const t = ty[i], a = ((i >> CSH) * AW) + (i & CM);
+    lr[i] = lg[i] = lb[i] = ps[i] = pm[i] = br[i] = bg[i] = bb[i] = oc[i] = nl[i] = 0;
+    if (!t) { px[a] = 0; lp[a] = 0; continue; }
     let on;
     if (t === 1) { const n = net[i]; on = n >= 0 && n < nn && nOn[n] > 0 ? 1 : 0; }
-    else if (t === 2) { const a = net[i], b = c.netV[i]; on = (a >= 0 && a < nn && nOn[a] > 0) || (b >= 0 && b < nn && nOn[b] > 0) ? 1 : 0; }
+    else if (t === 2) { const x = net[i], y = c.netV[i]; on = (x >= 0 && x < nn && nOn[x] > 0) || (y >= 0 && y < nn && nOn[y] > 0) ? 1 : 0; }
     else on = t === T.HEX ? (st[i] ? 1 : 0) : st[i] & 1;
-    if (t === T.LED) { const s = (da[i] >> 2) % (8 * LED_BRIGHT); px[i] = PXLED[(s << 1) | on]; lp[i] = on ? GLOWLED[s] : 0; }
-    else { px[i] = PX[(t << 4) | on]; lp[i] = !on ? 0 : t <= 2 ? GLOWWIRE : t === T.HEX ? GLOWHEX : 0; }
-    if (lp[i]) lit++;
+    let p, l;
+    if (t === T.LED) { const s = (da[i] >> 2) % (8 * LED_BRIGHT); p = PXLED[(s << 1) | on]; l = on ? GLOWLED[s] : 0; }
+    else { p = PX[(t << 4) | on]; l = !on ? 0 : t <= 2 ? GLOWWIRE : t === T.HEX ? GLOWHEX : 0; }
+    px[a] = p; lp[a] = l; oc[i] = 1;
+    if (l && t !== 1 && t !== 2) {   // a light: counts as emitted light (wires only glow, they don't light the far view)
+      lr[i] = (l & 255) / 255; lg[i] = ((l >> 8) & 255) / 255; lb[i] = ((l >> 16) & 255) / 255;
+      ps[i] = pm[i] = Math.max(lr[i], lg[i], lb[i]); nl[i] = 1;
+    } else { br[i] = (p & 255) / 255; bg[i] = ((p >> 8) & 255) / 255; bb[i] = ((p >> 16) & 255) / 255; }
+    if (l) lit++;
+  }
+  // the shrunk versions: each pixel = 2x2 pixels of the level before
+  for (let k = 1; k <= 6; k++) {
+    const s = 64 >> k, o = MIP_OFF[k], po = MIP_OFF[k - 1], ps2 = s * 2, [ax, ay] = mipRect(k), cells = 1 << (2 * k);
+    for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
+      const j = o + y * s + x, a = po + (2 * y) * ps2 + 2 * x, b = a + 1, cc = a + ps2, d = cc + 1;
+      const ocS = oc[j] = oc[a] + oc[b] + oc[cc] + oc[d];
+      const R = lr[j] = lr[a] + lr[b] + lr[cc] + lr[d], G = lg[j] = lg[a] + lg[b] + lg[cc] + lg[d], B = lb[j] = lb[a] + lb[b] + lb[cc] + lb[d];
+      const P = ps[j] = ps[a] + ps[b] + ps[cc] + ps[d], PM = pm[j] = Math.max(pm[a], pm[b], pm[cc], pm[d]);
+      const BR = br[j] = br[a] + br[b] + br[cc] + br[d], BG = bg[j] = bg[a] + bg[b] + bg[cc] + bg[d], BB = bb[j] = bb[a] + bb[b] + bb[cc] + bb[d];
+      const NL = nl[j] = nl[a] + nl[b] + nl[cc] + nl[d];
+      const at = (ay + y) * AW + ax + x;
+      if (!ocS) { px[at] = 0; lp[at] = 0; continue; }
+      const m = Math.max(R, G, B);
+      // the light's color = its added-up color, scaled so its strongest part is full.
+      // How bright: the light ADDS UP (lights covering a quarter of the pixel already make it fully bright - like stars,
+      // a few small lights are still clearly seen from far) but never brighter than the lights themselves are set to.
+      const hr = m > 0 ? R / m : 0, hg = m > 0 ? G / m : 0, hb = m > 0 ? B / m : 0;
+      const bright = NL > 0 ? Math.min(P / NL, 4 * P / cells) : 0;
+      // (premultiplied: the blocks' own colors, spread over the whole pixel, plus the light)
+      const qr = Math.min(1, BR / cells + hr * bright), qg = Math.min(1, BG / cells + hg * bright), qb = Math.min(1, BB / cells + hb * bright);
+      const al = Math.min(1, Math.max(ocS / cells, qr, qg, qb));
+      px[at] = rgba(qr / al * 255 | 0, qg / al * 255 | 0, qb / al * 255 | 0, al * 255 + 0.5 | 0);
+      lp[at] = PM > 0 ? rgba(hr * PM * 255 | 0, hg * PM * 255 | 0, hb * PM * 255 | 0, 255) : 0;   // (for the glow: as bright as its brightest light)
+    }
   }
   c.g.putImageData(c.img, 0, 0);
   if (lit || c.lit) c.lg.putImageData(c.limg, 0, 0);
@@ -638,13 +684,16 @@ function sprite(key, t, d, set, st, arms, onV, z) {
 function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
   const chunks = visibleChunks(l, x0 >> CSH, y0 >> CSH, x1 >> CSH, y1 >> CSH);
   if (z < DETAIL) {
-    // MAP VIEW: every chunk is a tiny 64x64 picture, one pixel per block, stretched up
-    ctx.imageSmoothingEnabled = false;
+    // MAP VIEW: every chunk is a tiny picture, one pixel per block, stretched up. Zoomed out so far that several blocks
+    // share one screen pixel, the shrunk version that fits is used instead (its lights already added together).
+    // (one level coarser than the screen's pixels, drawn smoothly: neighbouring lights mix more the further out you go)
+    const k = z >= 1 ? 0 : Math.min(6, Math.floor(Math.log2(1 / z)) + 1), [rx, ry, rs] = mipRect(k);
+    ctx.imageSmoothingEnabled = k > 0;
     for (const c of chunks) {
       freshen(c);
       const sx = Math.round(ox + c.cx * CS * z), sy = Math.round(oy + c.cy * CS * z);
       const ex = Math.round(ox + (c.cx + 1) * CS * z), ey = Math.round(oy + (c.cy + 1) * CS * z);
-      ctx.drawImage(c.canvas, sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy));
+      ctx.drawImage(c.canvas, rx, ry, rs, rs, sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy));
     }
     return chunks;
   }
@@ -685,6 +734,18 @@ function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
 // THE GLOW. Every visible chunk's light picture is drawn into one small canvas (half the screen's size), and that is
 // added onto the screen twice, blurred - a tight glow and a wide soft one. 'lighter' ADDS light, like real light:
 // red and green LEDs next to each other glow yellow where they meet, and a block of lit LEDs reads as one bright screen.
+// MEDIUM ZOOM: the mixed light (2x2 blocks added together) is ADDED over the blocks - more of it the further out you
+// are (none from 16 px per block up). Lights of one color stay that color; red, green and blue side by side go white.
+function drawLightMix(chunks, z, ox, oy) {
+  if (!chunks || z >= 16 || z < 1) return;
+  const a = Math.min(0.85, (16 - z) / 15 * 0.85), [rx, ry, rs] = mipRect(1);
+  let any = false;
+  for (const c of chunks) if (c.lit) { any = true; break; }
+  if (!any) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = a; ctx.imageSmoothingEnabled = true;
+  for (const c of chunks) if (c.lit) ctx.drawImage(c.lcanvas, rx, ry, rs, rs, ox + c.cx * CS * z, oy + c.cy * CS * z, CS * z, CS * z);
+  ctx.restore();
+}
 let glowC = null, glowG = null, FILTER_OK = null;
 function drawGlow(chunks, z, ox, oy) {
   if (gset.glow <= 0 || !chunks) return;
@@ -697,7 +758,9 @@ function drawGlow(chunks, z, ox, oy) {
   }
   glowG.setTransform(1, 0, 0, 1, 0, 0); glowG.clearRect(0, 0, gw, gh);
   glowG.imageSmoothingEnabled = true;
-  for (const c of chunks) if (c.lit) glowG.drawImage(c.lcanvas, (ox + c.cx * CS * z) * S, (oy + c.cy * CS * z) * S, CS * z * S, CS * z * S);
+  // (the glow comes from the lights mixed 2x2 - or more, far out: where red, green and blue glows meet, it's white)
+  const [rx, ry, rs] = mipRect(z >= 1 ? 1 : Math.max(1, Math.min(6, Math.floor(Math.log2(1 / z)) + 1)));
+  for (const c of chunks) if (c.lit) glowG.drawImage(c.lcanvas, rx, ry, rs, rs, (ox + c.cx * CS * z) * S, (oy + c.cy * CS * z) * S, CS * z * S, CS * z * S);
   if (FILTER_OK === null) { ctx.filter = 'blur(2px)'; FILTER_OK = ctx.filter === 'blur(2px)'; ctx.filter = 'none'; }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -799,6 +862,7 @@ function render() {
     ctx.globalAlpha = 1;
   } else if (layer > 0) { ctx.globalAlpha = 0.18; drawLayer(layer - 1, z, ox, oy, x0, y0, x1, y1, false); ctx.globalAlpha = 1; }
   const shown = drawLayer(layer, z, ox, oy, x0, y0, x1, y1, true);
+  drawLightMix(shown, z, ox, oy);
   drawGlow(shown, z, ox, oy);
   drawLinks(z, ox, oy);
   if (insp && insp.l === layer) {   // the block the inspector is editing
