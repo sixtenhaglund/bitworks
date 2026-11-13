@@ -1,0 +1,15 @@
+{
+  "name": "bitworks",
+  "version": "1.0.0",
+  "description": "BITWORKS desktop app",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^42.11.12"
+  }
+}
