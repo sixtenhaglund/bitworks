@@ -80,6 +80,19 @@
   #gset.show { display: flex; }
   #gset label { display: flex; flex-direction: column; gap: 2px; }
   #gset label.ck { flex-direction: row; align-items: center; gap: 6px; }
+  #bEx { margin-left: 6px; color: #ffc846; background: rgba(255, 200, 70, 0.1); }
+  #bEx:hover { background: rgba(255, 200, 70, 0.2); }
+  #ex { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); }
+  #ex.show { display: flex; }
+  #ex .box { width: min(860px, 94vw); max-height: 88vh; overflow: auto; padding: 22px 26px; }
+  #ex h2 { margin: 0 0 4px; color: #ffc846; letter-spacing: 2px; font-size: 18px; }
+  #ex > .box > p { margin: 0 0 14px; color: #9aa6b8; }
+  #exList { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .exc { text-align: left; padding: 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); }
+  .exc:hover { background: rgba(255, 200, 70, 0.08); border-color: rgba(255, 200, 70, 0.4); }
+  .exc canvas { width: 100%; height: 110px; display: block; border-radius: 6px; background: #0e1a15; margin-bottom: 8px; }
+  .exc b { display: block; color: #fff; margin-bottom: 3px; }
+  .exc span { color: #8d99ab; font-size: 12px; line-height: 1.45; }
   #toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); padding: 6px 14px; opacity: 0;
     transition: opacity 0.25s; pointer-events: none; }
 </style>
@@ -93,12 +106,14 @@
   <button id="bSlow" class="icon" title="Slower ([)">−</button>
   <span id="speed">20/s</span>
   <button id="bFast" class="icon" title="Faster (])">+</button>
+  <button id="bEx" title="Ready-made things to look at and use">Examples</button>
 </div>
 
 <div id="menuWrap">
   <button id="bMenu" class="panel" title="Menu">☰</button>
   <div id="menu" class="panel">
     <button id="bHelp">Controls</button>
+    <button id="bExMenu">Examples</button>
     <button id="bSettings">Settings</button>
     <div id="gset">
       <label>Glow <input type="range" min="0" max="200" data-g="glow"></label>
@@ -127,6 +142,12 @@
 <div id="coords"></div>
 <div id="toast" class="panel"></div>
 <input id="file" type="file" accept=".bitworks,.json" style="display:none">
+
+<div id="ex"><div class="box panel">
+  <h2>EXAMPLES</h2>
+  <p>Pick one: it follows your mouse - click to put it down. <kbd>R</kbd> turns it, <kbd>Esc</kbd> cancels.</p>
+  <div id="exList"></div>
+</div></div>
 
 <div id="help"><div class="box panel">
   <h2>BITWORKS</h2>

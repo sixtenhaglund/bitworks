@@ -534,8 +534,76 @@ function buildDemo(w) {
   put(12, 14, T.SWITCH); wire(13, 14, 14, 14); wire(14, 14, 16, 14, 1); put(17, 14, T.LED, 1, 1, 1);
 }
 
+// ---------------------------------------------------------------- EXAMPLES (the Examples button)
+// Each example is built into a CLIPBOARD (the same thing Ctrl+C makes), so picking one is like pasting it: it
+// follows your mouse and you click to put it down. Cells: dx, dy, layer offset, type, data, state, layer-touching.
+// Facing: 0 up, 1 right, 2 down, 3 left. LED colors: 0 red 1 green 2 blue 3 yellow 4 white 5 orange 6 purple 7 cyan.
+function exampleClip(ex) {
+  const cells = [], links = [];
+  const api = {
+    put(x, y, t, d = 1, set = 0, l = 0, vert = 3) { cells.push(x, y, l, t, d | (set << 2), 0, vert); },
+    wire(x0, y0, x1, y1, l = 0) { for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) api.put(x, y, T.WIRE, 0, 0, l); },
+    // a SEPARATE wire: only joins on the sides given (0 up 1 right 2 down 3 left)
+    sep(x, y, sides, l = 0) { let m = 0; for (const s of sides) m |= 1 << s; cells.push(x, y, l, T.WIRE, 64 | (m << 2), 0, 3); },
+    link(x0, y0, x1, y1, l0 = 0, l1 = 0) { links.push([x0, y0, l0, x1, y1, l1]); },
+  };
+  ex.build(api);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < cells.length; i += 7) { x0 = Math.min(x0, cells[i]); y0 = Math.min(y0, cells[i + 1]); x1 = Math.max(x1, cells[i]); y1 = Math.max(y1, cells[i + 1]); }
+  for (let i = 0; i < cells.length; i += 7) { cells[i] -= x0; cells[i + 1] -= y0; }
+  for (const L of links) { L[0] -= x0; L[1] -= y0; L[3] -= x0; L[4] -= y0; }
+  return { w: x1 - x0 + 1, h: y1 - y0 + 1, cells, links };
+}
+const SMILEY = ['..XXXXXX..', '.X......X.', 'X..X..X..X', 'X........X', 'X.X....X.X', 'X..XXXX..X', '.X......X.', '..XXXXXX..'];
+const EXAMPLES = [
+  { name: '1-bit memory', desc: 'A D flip-flop remembers one bit. Set the DATA switch (top), then press WRITE (the button): the light keeps that value, even after you flip the switch again.',
+    build(a) { a.put(1, 0, T.SWITCH); a.wire(1, 1, 1, 1); a.put(0, 2, T.BUTTON); a.put(1, 2, T.DFF, 1); a.wire(2, 2, 2, 2); a.put(3, 2, T.LED, 1, 1); } },
+  { name: '4-bit memory', desc: 'Four D flip-flops = a 4-bit register. Set the 4 DATA switches, press WRITE (left): all 4 lights store the number at once.',
+    build(a) {
+      a.put(-1, 0, T.BUTTON);
+      for (let x = 0; x <= 10; x++) a.sep(x, 0, (x - 1) % 3 === 0 ? [1, 2, 3] : [1, 3]);   // the WRITE line (only touches the flip-flops)
+      for (let b = 0; b < 4; b++) { const x = 1 + 3 * b; a.put(x, 1, T.DFF, 2); a.put(x + 1, 1, T.SWITCH); a.wire(x, 2, x, 2); a.put(x, 3, T.LED, 1, 3); }
+    } },
+  { name: '4-bit counter', desc: 'A clock ticks T flip-flops that count up in binary (the 4 lights), and LINKS carry the 4 bits to a hex display that shows the number 0-F.',
+    build(a) {
+      a.put(0, 0, T.CLOCK, 1, 4);
+      const side = [[6, 4], [7, 5], [6, 6], [5, 5]];   // the hex display's top, right, bottom, left = 1, 2, 4, 8
+      a.put(6, 5, T.HEX);
+      for (let b = 0; b < 4; b++) {
+        const x = 1 + b * 3;
+        a.put(x, 0, T.TFF, 1); a.wire(x + 1, 0, x + 1, 1); a.put(x + 1, 2, T.LED, 1, 2);
+        if (b < 3) a.put(x + 2, 0, T.NOT, 1);
+        a.wire(side[b][0], side[b][1], side[b][0], side[b][1]);
+        a.link(x + 1, 1, side[b][0], side[b][1]);
+      }
+    } },
+  { name: 'Half adder', desc: 'Adds two bits, A + B. XOR gives the SUM (top light), AND gives the CARRY (bottom light). 1 + 1 = 10 in binary: sum off, carry on.',
+    build(a) {
+      a.put(0, 0, T.SWITCH); a.wire(1, 0, 2, 0); a.put(0, 2, T.SWITCH); a.wire(1, 2, 2, 2);
+      a.put(2, 1, T.XOR, 1); a.wire(3, 1, 3, 1); a.put(4, 1, T.LED, 1, 1);
+      a.put(2, 5, T.AND, 1); a.wire(3, 5, 3, 5); a.put(4, 5, T.LED, 1, 0);
+      a.link(0, 0, 2, 5); a.link(0, 2, 2, 5);   // (links: A and B also go into the AND gate)
+    } },
+  { name: 'Color mixing screen', desc: 'A screen of red, green and blue LEDs in stripes, like a real monitor. Turn on the R, G, B switches and ZOOM OUT: red + green = yellow, all three = white.',
+    build(a) {
+      const W = 9, H = 6;
+      for (let c = 0; c < 3; c++) a.put(-2, c * 2, T.SWITCH);
+      for (let x = 0; x < W; x++) {
+        for (let y = 0; y < H; y++) { a.put(x, y, T.LED, 1, x % 3, 0, 2); a.sep(x, y, [0, 2], 1); }   // the LEDs, and a wire under each column (a layer up)
+        a.link(-2, (x % 3) * 2, x, 0, 0, 1);   // each color's switch feeds its columns' wires
+      }
+    } },
+  { name: 'LED picture', desc: 'A little screen showing a picture: each lit pixel has an always-ON block on the layer above it. Change the LED colors in the panel to recolor the whole picture.',
+    build(a) {
+      for (let y = 0; y < SMILEY.length; y++) for (let x = 0; x < SMILEY[y].length; x++) {
+        a.put(x, y, T.LED, 1, 3, 0, 2);
+        if (SMILEY[y][x] === 'X') a.put(x, y, T.CONST, 1, 0, 1, 1);
+      }
+    } },
+];
+
 const BW = { CS, CSH, CM, CN, LIM, NL, DX, DY, T, NAMES, PER, SETTINGS,
-  outMask, inMask, hasPort, canSend, canRecv, World, Sim, encodeWorld, decodeWorld, buildDemo };
+  outMask, inMask, hasPort, canSend, canRecv, World, Sim, encodeWorld, decodeWorld, buildDemo, EXAMPLES, exampleClip };
 if (typeof module !== 'undefined' && module.exports) module.exports = BW;
 root.BW = BW;
 })(typeof window !== 'undefined' ? window : globalThis);

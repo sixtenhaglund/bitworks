@@ -1062,6 +1062,7 @@ addEventListener('keydown', (e) => {
   keys[k] = true;
   if (k === 'alt') { e.preventDefault(); return; }
   if (k === 'f1' || k === '?') { e.preventDefault(); toggleHelp(); return; }
+  if (k === 'escape' && exOpen) { hideExamples(); return; }
   if (ctrl) {
     if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (k === 'y') { e.preventDefault(); redo(); }
@@ -1118,6 +1119,53 @@ $('bNew').onclick = () => {
   if (!confirm('Start a new empty world? Your current world will be gone (export it first if you want to keep it).')) return;
   world.clear(); undoStack.length = 0; redoStack.length = 0; cam.x = 0; cam.y = 0; setLayer(0); save();
 };
+// THE EXAMPLES gallery: a card for each example (a little picture of it, its name, what it does). Clicking one turns
+// it into the clipboard and starts pasting it - it follows the mouse, click to put it down (R turns it).
+function examplePreview(cv2, clip) {
+  const g = cv2.getContext('2d'), Wp = cv2.width = 440, Hp = cv2.height = 220;
+  g.fillStyle = '#0e1a15'; g.fillRect(0, 0, Wp, Hp);
+  const s = Math.min(18, (Wp - 20) / clip.w, (Hp - 20) / clip.h), ox = (Wp - clip.w * s) / 2, oy = (Hp - clip.h * s) / 2;
+  const c = clip.cells, top = new Map(), hasConst = c.some((v, i) => i % 7 === 3 && v === T.CONST);
+  for (let i = 0; i < c.length; i += 7) if (c[i + 2] === 1 && c[i + 3] === T.CONST) top.set(c[i] + ',' + c[i + 1], 1);
+  for (let i = 0; i < c.length; i += 7) {
+    if (c[i + 2] !== 0) continue;
+    const t = c[i + 3], set = c[i + 4] >> 2;
+    const on = t === T.LED ? (hasConst ? top.has(c[i] + ',' + c[i + 1]) : 1) : t === T.WIRE ? 0 : 1;
+    const col = t === T.HEX ? [255, 80, 50] : colorOf(t, set, on);
+    const x = ox + c[i] * s, y = oy + c[i + 1] * s;
+    if (t === T.LED && on) { g.shadowColor = css(col); g.shadowBlur = s * 0.8; }
+    g.fillStyle = css(col); g.fillRect(x + (t === T.WIRE ? s * 0.3 : 0.5), y + (t === T.WIRE ? s * 0.3 : 0.5), t === T.WIRE ? s * 0.4 : s - 1, t === T.WIRE ? s * 0.4 : s - 1);
+    g.shadowBlur = 0;
+  }
+  g.strokeStyle = 'rgba(160,190,255,0.5)'; g.setLineDash([4, 3]);
+  for (const L of clip.links) { g.beginPath(); g.moveTo(ox + (L[0] + 0.5) * s, oy + (L[1] + 0.5) * s); g.lineTo(ox + (L[3] + 0.5) * s, oy + (L[4] + 0.5) * s); g.stroke(); }
+  g.setLineDash([]);
+}
+let exBuilt = false, exOpen = false;
+function showExamples() {
+  if (!exBuilt) {
+    exBuilt = true;
+    for (const ex of BW.EXAMPLES) {
+      const b = document.createElement('button'); b.className = 'exc';
+      const pic = document.createElement('canvas'); b.appendChild(pic); examplePreview(pic, BW.exampleClip(ex));
+      const n = document.createElement('b'); n.textContent = ex.name; b.appendChild(n);
+      const d = document.createElement('span'); d.textContent = ex.desc; b.appendChild(d);
+      b.onclick = (e) => { e.stopPropagation(); useExample(ex); };
+      $('exList').appendChild(b);
+    }
+  }
+  $('menu').classList.remove('show');
+  $('ex').classList.add('show'); exOpen = true;
+}
+function hideExamples() { $('ex').classList.remove('show'); exOpen = false; }
+function useExample(ex) {
+  clip = BW.exampleClip(ex); pasting = true; sel = null;
+  hideExamples();
+  toast(ex.name + ': click to put it down (R turns it)');
+}
+$('bEx').onclick = showExamples;
+$('bExMenu').onclick = showExamples;
+$('ex').onclick = (e) => { if (e.target === $('ex')) hideExamples(); };
 function toggleHelp() { $('help').classList.toggle('show'); }
 function hideHelp() { $('help').classList.remove('show'); }
 let toastT = 0;
