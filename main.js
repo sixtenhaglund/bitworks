@@ -12,37 +12,74 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 // ---------------------------------------------------------------- colors
-const BG = '#0b0e13';
-const LED_COLORS = [[255, 70, 60], [70, 230, 110], [70, 150, 255], [255, 215, 60], [240, 245, 255], [255, 145, 40], [190, 100, 255], [50, 225, 225]];
+const css = (c, a) => a === undefined ? `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})` : `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const pack = (c) => ((255 << 24) | ((Math.min(255, c[2]) | 0) << 16) | ((Math.min(255, c[1]) | 0) << 8) | (Math.min(255, c[0]) | 0)) >>> 0;
+const hexOf = (c) => '#' + c.map((v) => (v | 0).toString(16).padStart(2, '0')).join('');
+
+// GLOBAL SETTINGS (☰ → Settings), kept in this browser: glow strength, how dark the board is, grid, sound volume
+const GS_KEY = 'bitworks-settings';
+const gset = { glow: 1, dark: 0.7, grid: true, volume: 0.5 };
+try { Object.assign(gset, JSON.parse(localStorage.getItem(GS_KEY) || '{}')); } catch (e) { }
+function saveSettings() { try { localStorage.setItem(GS_KEY, JSON.stringify(gset)); } catch (e) { } }
+// the board: a dark green circuit board (darker or lighter with the setting)
+let BGC = [0, 0, 0], BG = '#000';
+function updateBoard() {
+  const d = gset.dark;
+  BGC = [26 - 20 * d, 40 - 31 * d, 35 - 27 * d]; BG = css(BGC);
+  spriteCache.clear(); gridPat = null;
+}
+
+// LEDs: 8 colors (each one can be changed: the palette is saved with the world)
+const LED_DEFAULT = [[255, 70, 60], [70, 230, 110], [70, 150, 255], [255, 215, 60], [240, 245, 255], [255, 145, 40], [190, 100, 255], [50, 225, 225]];
+const LED_COLORS = LED_DEFAULT.map((c) => c.slice());
 const LED_NAMES = ['red', 'green', 'blue', 'yellow', 'white', 'orange', 'purple', 'cyan'];
+const ledName = (i) => LED_COLORS[i].join() === LED_DEFAULT[i].join() ? LED_NAMES[i] : 'color ' + (i + 1);
+// LED setting: bits 0-2 = color, bits 3-5 = brightness step. Steps 0-4 are the old 100/80/60/40/20 % (old saves keep
+// their look); 5, 6, 7 were added: 10 %, 5 % and 50 %. BRIGHT_ORDER lists them from brightest to darkest.
+const LED_BRIGHT = 8;
+const LVL = [1, 0.8, 0.6, 0.4, 0.2, 0.1, 0.05, 0.5];
+const BRIGHT_ORDER = [0, 1, 2, 7, 3, 4, 5, 6];
+const ledBright = (set) => LVL[(set >> 3) & 7];
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const WIRE_OFF = [58, 64, 78], WIRE_ON = [255, 200, 70];
+// wires are copper traces: dull copper when off, bright gold when a signal runs through them
+const WIRE_OFF = [124, 84, 54], WIRE_ON = [255, 205, 95];
 const COL = {   // [off, on] body color of each block type
   1: [WIRE_OFF, WIRE_ON], 2: [WIRE_OFF, WIRE_ON],
   3: [[44, 52, 64], [46, 160, 90]], 4: [[44, 52, 64], [220, 120, 40]],
   5: [[48, 42, 76], [130, 90, 220]], 6: [[46, 160, 90], [46, 160, 90]],
-  15: [[26, 46, 50], [24, 120, 112]], 16: [[26, 46, 50], [24, 120, 112]],
+  15: [[30, 44, 48], [24, 120, 112]], 16: [[30, 44, 48], [24, 120, 112]],
   18: [[18, 15, 16], [18, 15, 16]], 19: [[48, 46, 34], [190, 165, 50]],
 };
-for (let t = 7; t <= 14; t++) COL[t] = [[30, 37, 50], [38, 82, 150]];
-// LED setting: bits 0-2 = color, bits 3-5 = brightness step (0 = 100%, 4 = 20%)
-const LED_BRIGHT = 5;
-const ledBright = (set) => 1 - Math.min(LED_BRIGHT - 1, set >> 3) * 0.2;
+for (let t = 7; t <= 14; t++) COL[t] = [[34, 38, 48], [40, 84, 150]];   // chips: black epoxy, blue-lit when ON
 function colorOf(t, set, on) {
   if (t === T.LED) {
-    const c = LED_COLORS[set & 7], b = on ? ledBright(set) : 0.2;
-    return [c[0] * b, c[1] * b, c[2] * b];
+    const c = LED_COLORS[set & 7], b = on ? ledBright(set) : 0;
+    return on ? [c[0] * b, c[1] * b, c[2] * b] : [c[0] * 0.1 + 10, c[1] * 0.1 + 11, c[2] * 0.1 + 13];
   }
   return COL[t][on ? 1 : 0];
 }
-const css = (c, a) => a === undefined ? `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})` : `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
-const pack = (c) => ((255 << 24) | ((c[2] | 0) << 16) | ((c[1] | 0) << 8) | (c[0] | 0)) >>> 0;
-// pixel colors for the zoomed-out map view, packed once
-const PX = {};
-for (let t = 1; t <= 19; t++) for (let on = 0; on < 2; on++) PX[(t << 4) | on] = pack(colorOf(t, 0, on));
-const PXLED = [];   // LEDs get their own table: 8 colors x 5 brightness
-for (let set = 0; set < 8 * LED_BRIGHT; set++) for (let on = 0; on < 2; on++) PXLED[(set << 1) | on] = pack(colorOf(T.LED, set, on));
-PX[(T.HEX << 4) | 1] = pack([255, 80, 50]);
+// pixel colors for the zoomed-out map view (PX, PXLED) and for the glow (GLOW*), packed once
+const PX = {}, PXLED = [], GLOWLED = [];
+let GLOWWIRE = 0, GLOWHEX = 0;
+function buildPixels() {
+  for (let t = 1; t <= 19; t++) for (let on = 0; on < 2; on++) PX[(t << 4) | on] = pack(colorOf(t, 0, on));
+  for (let set = 0; set < 8 * LED_BRIGHT; set++) {
+    for (let on = 0; on < 2; on++) PXLED[(set << 1) | on] = pack(colorOf(T.LED, set, on));
+    GLOWLED[set] = pack(colorOf(T.LED, set, 1));
+  }
+  PX[(T.HEX << 4) | 1] = pack([255, 80, 50]);
+  GLOWWIRE = pack(WIRE_ON.map((v) => v * 0.28)); GLOWHEX = pack([255, 70, 40]);
+}
+buildPixels();
+// change one of the 8 LED colors (every LED using it changes)
+function setPalette(i, hex) {
+  const n = parseInt(String(hex).slice(1), 16);
+  if (!(n >= 0)) return;
+  LED_COLORS[i] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  buildPixels(); spriteCache.clear();
+  for (const c of world.chunks.values()) c.dirty = true;
+  drawIcons(); markSave();
+}
 
 const LINK = 100;   // the link tool isn't a block, it gets its own number
 const nameOf = (t) => t === LINK ? 'LINK' : NAMES[t];
@@ -72,7 +109,7 @@ const VNAME = ['no other layers', 'layer below only', 'layer above only', 'above
 const VCYCLE = [3, 1, 2, 0];
 function settingText(t, set) {
   if (t === T.CLOCK) { const p = PER[set % PER.length]; return 'every ' + p + ' tick' + (p > 1 ? 's' : ''); }
-  if (t === T.LED) return LED_NAMES[set & 7] + (set >> 3 ? ', ' + Math.round(ledBright(set) * 100) + '%' : '');
+  if (t === T.LED) return ledName(set & 7) + (set >> 3 ? ', ' + Math.round(ledBright(set) * 100) + '%' : '');
   if (t === T.BUZZER) return NOTE_NAMES[set % 12] + (4 + ((set / 12) | 0));
   return '';
 }
@@ -83,10 +120,31 @@ function rrect(g, x, y, w, h, r) {
   if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h);
 }
 function circle(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, 6.2832); }
+// a copper trace: a dark edge under it, a soft glow round it when a signal runs through, a thin shine along its middle
 function wireLine(g, on, w, z, path) {
   g.lineCap = 'butt';
-  if (on && z >= 8) { g.strokeStyle = 'rgba(255,200,70,0.18)'; g.lineWidth = w * 2.6; path(); g.stroke(); }
+  if (z >= 8) { g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = w * 1.5; path(); g.stroke(); }
+  if (on && z >= 8) { g.strokeStyle = 'rgba(255,205,95,0.2)'; g.lineWidth = w * 2.4; path(); g.stroke(); }
   g.strokeStyle = css(on ? WIRE_ON : WIRE_OFF); g.lineWidth = w; path(); g.stroke();
+  if (z >= 14) { g.strokeStyle = on ? 'rgba(255,255,225,0.55)' : 'rgba(255,215,170,0.16)'; g.lineWidth = Math.max(1, w * 0.25); path(); g.stroke(); }
+}
+// light from above: a little lighter at the top edge, a little darker at the bottom (on the current path)
+function bevel(g, y, h) {
+  const gr = g.createLinearGradient(0, y, 0, y + h);
+  gr.addColorStop(0, 'rgba(255,255,255,0.13)'); gr.addColorStop(0.45, 'rgba(255,255,255,0.02)'); gr.addColorStop(1, 'rgba(0,0,0,0.22)');
+  g.fillStyle = gr; g.fill();
+}
+// a chip's metal legs: one sticking out on every side it connects through (gold on the output side when it's ON)
+function pins(g, t, d, on, sx, sy, z, p) {
+  const len = p + z * 0.05, wd = z * 0.16;
+  for (let s = 0; s < 4; s++) {
+    if (!hasPort(t, d, s)) continue;
+    g.fillStyle = s === d && on ? css(WIRE_ON) : '#9aa3b2';
+    if (s === 0) g.fillRect(sx + z / 2 - wd / 2, sy, wd, len);
+    else if (s === 2) g.fillRect(sx + z / 2 - wd / 2, sy + z - len, wd, len);
+    else if (s === 1) g.fillRect(sx + z - len, sy + z / 2 - wd / 2, len, wd);
+    else g.fillRect(sx, sy + z / 2 - wd / 2, len, wd);
+  }
 }
 // arms = which sides a wire connects to. onV = the up/down signal of a crossing.
 function drawBlock(g, t, d, set, st, arms, sx, sy, z, onV) {
@@ -102,8 +160,10 @@ function drawBlock(g, t, d, set, st, arms, sx, sy, z, onV) {
       g.beginPath();
       for (let s = 0; s < 4; s++) if ((arms >> s) & 1) { g.moveTo(cx, cy); g.lineTo(cx + DX[s] * z / 2, cy + DY[s] * z / 2); }
     });
-    g.fillStyle = css(on ? WIRE_ON : WIRE_OFF);
-    circle(g, cx, cy, arms ? w / 2 : w * 0.8); g.fill();
+    if (arms !== 5 && arms !== 10) {   // a solder pad at corners, junctions and ends (not along straight runs)
+      g.fillStyle = css(on ? WIRE_ON : WIRE_OFF);
+      circle(g, cx, cy, arms ? w * 0.62 : w * 0.85); g.fill();
+    }
     return;
   }
   if (t === T.CROSS) {
@@ -112,23 +172,27 @@ function drawBlock(g, t, d, set, st, arms, sx, sy, z, onV) {
     wireLine(g, onV, w, z, () => { g.beginPath(); g.moveTo(cx, sy); g.lineTo(cx, sy + z); });
     return;
   }
-  const p = z * 0.08, bs = z - p * 2, r = z * 0.2;
+  const p = z * 0.08, bs = z - p * 2, r = z * 0.16;
   if (t === T.LED) {
-    const c = LED_COLORS[set & 7], br = ledBright(set);
-    if (on && z >= 8) {
-      const gr = g.createRadialGradient(cx, cy, z * 0.1, cx, cy, z * 0.85);
-      gr.addColorStop(0, css(c, 0.45 * br * br)); gr.addColorStop(1, css(c, 0));
-      g.fillStyle = gr; g.fillRect(sx - z * 0.35, sy - z * 0.35, z * 1.7, z * 1.7);
+    if (on) {   // LIT: fills its whole cell, so lit LEDs next to each other make one smooth screen (the glow is added later)
+      g.fillStyle = css(colorOf(T.LED, set, 1)); g.fillRect(sx, sy, z, z);
+      return;
     }
-    g.fillStyle = css(on ? colorOf(T.LED, set, 1) : [c[0] * 0.18 + 10, c[1] * 0.18 + 10, c[2] * 0.18 + 12]);
-    circle(g, cx, cy, z * 0.36); g.fill();
-    if (z >= 10) { g.fillStyle = on ? `rgba(255,255,255,${0.6 * br})` : 'rgba(255,255,255,0.08)'; circle(g, cx - z * 0.1, cy - z * 0.1, z * 0.09); g.fill(); }
+    // OFF: a dark glass window, faintly tinted with its color
+    const q = z * 0.06;
+    rrect(g, sx + q, sy + q, z - 2 * q, z - 2 * q, z * 0.14);
+    g.fillStyle = css(colorOf(T.LED, set, 0)); g.fill();
+    if (z >= 10) { bevel(g, sy, z); g.strokeStyle = 'rgba(255,255,255,0.06)'; g.lineWidth = 1; g.stroke(); }
     return;
   }
-  // rounded body
+  const chip = t >= 7 && t <= 16;
+  if (chip && z >= 10) pins(g, t, d, on, sx, sy, z, p);
+  // the body, lit from above
   rrect(g, sx + p, sy + p, bs, bs, r);
   g.fillStyle = css(colorOf(t, set, on && t !== T.HEX)); g.fill();
-  if (z >= 12) { g.strokeStyle = 'rgba(255,255,255,0.07)'; g.lineWidth = 1; g.stroke(); }
+  if (z >= 10) bevel(g, sy + p, bs);
+  if (z >= 12) { rrect(g, sx + p, sy + p, bs, bs, r); g.strokeStyle = 'rgba(255,255,255,0.07)'; g.lineWidth = 1; g.stroke(); }
+  if (chip && z >= 20) { g.fillStyle = 'rgba(255,255,255,0.12)'; circle(g, sx + p + z * 0.12, sy + p + z * 0.12, z * 0.035); g.fill(); }   // pin-1 dot
 
   if (t === T.SWITCH) {   // a little toggle: knob on the right = ON
     const tw = z * 0.5, th = z * 0.26;
@@ -194,7 +258,8 @@ const tool = { t: T.WIRE, d: 1 };
 const toolSet = { 5: 4, 17: 0, 19: 0 };
 let toolVert = 3, layer = 0, xray = false;   // xray = see through all layers
 const SPEEDS = [1, 2, 5, 10, 20, 40, 60, 120, 250, 500, 1000, 2500, 5000, 10000, Infinity];
-let speedI = 4, running = true, showGrid = true;
+let speedI = 4, running = true;
+let insp = null;   // the inspector panel edits: null = the next block you place, {x, y, l} = one placed block (I)
 let sel = null, clip = null, pasting = false, dockHover = 0, linkFrom = null;
 const mouse = { x: 0, y: 0, cx: 0, cy: 0, inside: false };
 let stroke = null;
@@ -402,7 +467,10 @@ function pasteAt(x, y) {
 // F: change clock speed / LED color / buzzer note,  B: LED brightness
 function nextSetting(t, set, dir, bright) {
   if (t === T.LED) {
-    if (bright) return (set & 7) | ((((set >> 3) + dir + LED_BRIGHT) % LED_BRIGHT) << 3);
+    if (bright) {   // B = one step darker, Shift+B = one step brighter
+      const i = BRIGHT_ORDER.indexOf((set >> 3) & 7);
+      return (set & 7) | (BRIGHT_ORDER[(i + dir + 8) % 8] << 3);
+    }
     return (set & ~7) | (((set & 7) + dir + 8) & 7);
   }
   const n = SETTINGS[t];
@@ -438,7 +506,7 @@ function pickBlock() {   // middle-click / P: grab the block under the mouse
   const t = typeAt(mouse.cx, mouse.cy);
   if (!t) return;
   const d = world.data(mouse.cx, mouse.cy, layer);
-  tool.d = d & 3; toolVert = world.vert(mouse.cx, mouse.cy, layer);
+  tool.d = d & 3; toolVert = world.vert(mouse.cx, mouse.cy, layer); insp = null;
   if (SETTINGS[t]) toolSet[t] = d >> 2;
   selectTool(t);
 }
@@ -455,7 +523,7 @@ function ensureAudio() {
   if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
   try {
     AC = new (window.AudioContext || window.webkitAudioContext)();
-    master = AC.createGain(); master.gain.value = 0.12; master.connect(AC.destination);
+    master = AC.createGain(); master.gain.value = 0.24 * gset.volume; master.connect(AC.destination);
     for (let n = 0; n < 24; n++) {
       const o = AC.createOscillator(), g = AC.createGain();
       o.type = 'square'; o.frequency.value = 261.63 * Math.pow(2, n / 12);
@@ -473,23 +541,44 @@ sim.onBuzz = (n, d) => { buzzCount[n] += d; setVoice(n); };
 sim.onBuzzReset = (b) => { for (let n = 0; n < 24; n++) { buzzCount[n] = b[n]; setVoice(n); } };
 
 // ---------------------------------------------------------------- rendering
+// Every chunk keeps two tiny 64x64 pictures, one pixel per block, redrawn only when something in it changed:
+//  - canvas: what the blocks look like from far away (the map view)
+//  - lcanvas: only the LIGHT - lit LEDs, lit hex displays and (faintly) powered wires - for the glow (see drawGlow)
 function paintChunk(c) {
   if (!c.canvas) {
     c.canvas = document.createElement('canvas'); c.canvas.width = c.canvas.height = CS;
     c.g = c.canvas.getContext('2d'); c.img = c.g.createImageData(CS, CS); c.px = new Uint32Array(c.img.data.buffer);
+    c.lcanvas = document.createElement('canvas'); c.lcanvas.width = c.lcanvas.height = CS;
+    c.lg = c.lcanvas.getContext('2d'); c.limg = c.lg.createImageData(CS, CS); c.lpx = new Uint32Array(c.limg.data.buffer);
+    c.lit = 0;
   }
-  const px = c.px, ty = c.type, da = c.data, st = c.st, net = c.net, nOn = sim.netOn, nn = sim.nNets;
+  const px = c.px, lp = c.lpx, ty = c.type, da = c.data, st = c.st, net = c.net, nOn = sim.netOn, nn = sim.nNets;
+  let lit = 0;
   for (let i = 0; i < CN; i++) {
     const t = ty[i];
-    if (!t) { px[i] = 0; continue; }
+    if (!t) { px[i] = 0; lp[i] = 0; continue; }
     let on;
     if (t === 1) { const n = net[i]; on = n >= 0 && n < nn && nOn[n] > 0 ? 1 : 0; }
     else if (t === 2) { const a = net[i], b = c.netV[i]; on = (a >= 0 && a < nn && nOn[a] > 0) || (b >= 0 && b < nn && nOn[b] > 0) ? 1 : 0; }
     else on = t === T.HEX ? (st[i] ? 1 : 0) : st[i] & 1;
-    px[i] = t === T.LED ? PXLED[(((da[i] >> 2) % (8 * LED_BRIGHT)) << 1) | on] : PX[(t << 4) | on];
+    if (t === T.LED) { const s = (da[i] >> 2) % (8 * LED_BRIGHT); px[i] = PXLED[(s << 1) | on]; lp[i] = on ? GLOWLED[s] : 0; }
+    else { px[i] = PX[(t << 4) | on]; lp[i] = !on ? 0 : t <= 2 ? GLOWWIRE : t === T.HEX ? GLOWHEX : 0; }
+    if (lp[i]) lit++;
   }
   c.g.putImageData(c.img, 0, 0);
+  if (lit || c.lit) c.lg.putImageData(c.limg, 0, 0);
+  c.lit = lit;
   c.dirty = false;
+}
+// (a busy circuit makes most chunks change every tick: at most ~4 ms of REPAINTING per frame - the rest waits a
+// frame. Only the time spent repainting counts, and the first one each frame always goes, so nothing ever gets stuck.)
+let paintSpent = 0, paintedThisFrame = 0;
+function freshen(c) {
+  if (c.canvas && !c.dirty) return;
+  if (c.canvas && paintedThisFrame > 0 && paintSpent > 4) return;
+  const t0 = performance.now();
+  paintChunk(c);
+  paintSpent += performance.now() - t0; paintedThisFrame++;
 }
 
 const DETAIL = 10;   // pixels per cell where we switch from "map view" to drawn blocks
@@ -504,6 +593,18 @@ function wireArms(x, y, l, data) {
   for (let s = 0; s < 4; s++) if (hasPort(T.WIRE, data, s) && portAt(x + DX[s], y + DY[s], l, (s + 2) & 3)) arms |= 1 << s;
   return arms;
 }
+// (the same, faster: neighbours inside the same chunk are read straight from it)
+const NOFF = [-CS, 1, CS, -1];
+function wireArmsIn(c, i, lx, ly, x, y, l, data) {
+  if (lx === 0 || ly === 0 || lx === CM || ly === CM) return wireArms(x, y, l, data);
+  let arms = 0;
+  for (let s = 0; s < 4; s++) {
+    if (!hasPort(T.WIRE, data, s)) continue;
+    const j = i + NOFF[s], t = c.type[j];
+    if (t && hasPort(t, c.data[j], (s + 2) & 3)) arms |= 1 << s;
+  }
+  return arms;
+}
 function visibleChunks(l, cx0, cy0, cx1, cy1) {
   const out = [];
   if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) < world.chunks.size) {
@@ -513,31 +614,64 @@ function visibleChunks(l, cx0, cy0, cx1, cy1) {
   }
   return out;
 }
+
+// SPRITES: each different-looking block (kind, facing, setting, on/off, which arms a wire has...) is drawn ONCE into a
+// small picture at the current zoom, and then just stamped onto the screen - one call per block instead of ~13.
+// The pictures are thrown away when the zoom (or the colors) change.
+const spriteCache = new Map();
+let spriteZ = 0;
+function sprite(key, t, d, set, st, arms, onV, z) {
+  const px = Math.max(1, Math.round(z * DPR));
+  if (px !== spriteZ) { spriteCache.clear(); spriteZ = px; }
+  let s = spriteCache.get(key);
+  if (!s) {
+    if (spriteCache.size > 3000) spriteCache.clear();
+    s = document.createElement('canvas'); s.width = s.height = px;
+    const g = s.getContext('2d');
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawBlock(g, t, d, set, st, arms, 0, 0, px / DPR, onV);
+    spriteCache.set(key, s);
+  }
+  return s;
+}
+
 function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
   const chunks = visibleChunks(l, x0 >> CSH, y0 >> CSH, x1 >> CSH, y1 >> CSH);
   if (z < DETAIL) {
     // MAP VIEW: every chunk is a tiny 64x64 picture, one pixel per block, stretched up
     ctx.imageSmoothingEnabled = false;
     for (const c of chunks) {
-      if (c.dirty || !c.canvas) paintChunk(c);
+      freshen(c);
       const sx = Math.round(ox + c.cx * CS * z), sy = Math.round(oy + c.cy * CS * z);
       const ex = Math.round(ox + (c.cx + 1) * CS * z), ey = Math.round(oy + (c.cy + 1) * CS * z);
       ctx.drawImage(c.canvas, sx, sy, Math.max(1, ex - sx), Math.max(1, ey - sy));
     }
-    return;
+    return chunks;
   }
-  // BLOCK VIEW: draw every visible block properly
+  // BLOCK VIEW: every visible block stamped from its sprite
+  ctx.imageSmoothingEnabled = true;
   for (const c of chunks) {
+    if (main) freshen(c);   // (keeps its glow picture up to date)
     const bx = c.cx * CS, by = c.cy * CS;
     const cA = main && z >= 16 ? world.ch(c.cx, c.cy, l + 1) : null, cB = main && z >= 16 ? world.ch(c.cx, c.cy, l - 1) : null;
     const lx0 = Math.max(0, x0 - bx), lx1 = Math.min(CM, x1 - bx), ly0 = Math.max(0, y0 - by), ly1 = Math.min(CM, y1 - by);
+    const ty = c.type, da = c.data;
     for (let ly = ly0; ly <= ly1; ly++) for (let lx = lx0; lx <= lx1; lx++) {
-      const i = (ly << CSH) | lx, t = c.type[i];
+      const i = (ly << CSH) | lx, t = ty[i];
       if (!t) continue;
       const x = bx + lx, y = by + ly, sx = ox + x * z, sy = oy + y * z;
-      if (t === 1) drawBlock(ctx, 1, 0, 0, wireOn(c, i), wireArms(x, y, l, c.data[i]), sx, sy, z);
-      else if (t === 2) drawBlock(ctx, 2, 0, 0, wireOn(c, i), 0, sx, sy, z, sim.netIsOn(c.netV ? c.netV[i] : -1));
-      else drawBlock(ctx, t, c.data[i] & 3, c.data[i] >> 2, c.st[i], 0, sx, sy, z);
+      let spr;
+      if (t === 1) {
+        const on = wireOn(c, i), arms = wireArmsIn(c, i, lx, ly, x, y, l, da[i]);
+        spr = sprite(1 | (on << 13) | (arms << 17), 1, 0, 0, on, arms, 0, z);
+      } else if (t === 2) {
+        const on = wireOn(c, i), onV = sim.netIsOn(c.netV ? c.netV[i] : -1) ? 1 : 0;
+        spr = sprite(2 | (on << 13) | (onV << 21), 2, 0, 0, on, 0, onV, z);
+      } else {
+        const d = t === T.LED ? 0 : da[i] & 3, set = da[i] >> 2, s = t === T.HEX ? c.st[i] & 15 : c.st[i] & 1;
+        spr = sprite(t | (d << 5) | (set << 7) | (s << 13), t, d, set, s, 0, 0, z);
+      }
+      ctx.drawImage(spr, sx, sy, z, z);
       if (cA || cB) {
         const v = c.vert[i];
         const up = cA && (v & 2) && cA.type[i] && (cA.vert[i] & 1), down = cB && (v & 1) && cB.type[i] && (cB.vert[i] & 2);
@@ -545,6 +679,39 @@ function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
       }
     }
   }
+  return chunks;
+}
+
+// THE GLOW. Every visible chunk's light picture is drawn into one small canvas (half the screen's size), and that is
+// added onto the screen twice, blurred - a tight glow and a wide soft one. 'lighter' ADDS light, like real light:
+// red and green LEDs next to each other glow yellow where they meet, and a block of lit LEDs reads as one bright screen.
+let glowC = null, glowG = null, FILTER_OK = null;
+function drawGlow(chunks, z, ox, oy) {
+  if (gset.glow <= 0 || !chunks) return;
+  let any = false;
+  for (const c of chunks) if (c.lit) { any = true; break; }
+  if (!any) return;
+  const S = 0.5, gw = Math.max(1, Math.ceil(W * S)), gh = Math.max(1, Math.ceil(H * S));
+  if (!glowC || glowC.width !== gw || glowC.height !== gh) {
+    glowC = document.createElement('canvas'); glowC.width = gw; glowC.height = gh; glowG = glowC.getContext('2d');
+  }
+  glowG.setTransform(1, 0, 0, 1, 0, 0); glowG.clearRect(0, 0, gw, gh);
+  glowG.imageSmoothingEnabled = true;
+  for (const c of chunks) if (c.lit) glowG.drawImage(c.lcanvas, (ox + c.cx * CS * z) * S, (oy + c.cy * CS * z) * S, CS * z * S, CS * z * S);
+  if (FILTER_OK === null) { ctx.filter = 'blur(2px)'; FILTER_OK = ctx.filter === 'blur(2px)'; ctx.filter = 'none'; }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.imageSmoothingEnabled = true;
+  const k = Math.min(2, gset.glow);
+  if (FILTER_OK) {
+    ctx.filter = 'blur(' + Math.min(24, Math.max(1.5, z * 0.4)).toFixed(1) + 'px)';
+    ctx.globalAlpha = Math.min(1, 0.28 * k); ctx.drawImage(glowC, 0, 0, W, H);
+    ctx.filter = 'blur(' + Math.min(80, Math.max(4, z * 1.5)).toFixed(1) + 'px)';
+    ctx.globalAlpha = Math.min(1, 0.42 * k); ctx.drawImage(glowC, 0, 0, W, H);
+  } else {   // (no blur filter in this browser: the small picture stretched up is soft enough)
+    ctx.globalAlpha = Math.min(1, 0.5 * k); ctx.drawImage(glowC, 0, 0, W, H);
+  }
+  ctx.restore();
 }
 function drawLinks(z, ox, oy) {
   const links = world.links, fresh = sim.ver === world.ver;
@@ -582,7 +749,20 @@ function setXray(v) {
   toast(v ? 'X-ray on: seeing through all layers' : 'X-ray off');
 }
 
+// the board's pattern: a little round pad at every cell corner (like the holes on a prototyping board), one picture
+// repeated over the whole screen (one call - it used to be one tiny square per cell)
+let gridPat = null;
+function gridPattern() {
+  if (gridPat) return gridPat;
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(170,215,195,0.15)';
+  for (const [x, y] of [[0, 0], [64, 0], [0, 64], [64, 64]]) { circle(g, x, y, 4.5); g.fill(); }
+  gridPat = ctx.createPattern(c, 'repeat');
+  return gridPat;
+}
 function render() {
+  paintSpent = 0; paintedThisFrame = 0;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
   const z = cam.z, ox = W / 2 - cam.x * z, oy = H / 2 - cam.y * z;
@@ -590,8 +770,12 @@ function render() {
   const y0 = Math.floor(cam.y - H / 2 / z), y1 = Math.floor(cam.y + H / 2 / z);
 
   // background: dots when close, faint chunk lines when far
-  if (showGrid) {
-    if (z >= 10) {
+  if (gset.grid) {
+    const pat = z >= 10 && typeof DOMMatrix !== 'undefined' ? gridPattern() : null;
+    if (pat && pat.setTransform) {
+      pat.setTransform(new DOMMatrix().translate(ox, oy).scale(z / 64));
+      ctx.fillStyle = pat; ctx.fillRect(0, 0, W, H);
+    } else if (z >= 10) {
       ctx.fillStyle = 'rgba(160,180,210,0.13)';
       const ds = z >= 24 ? 2 : 1;
       for (let y = y0; y <= y1 + 1; y++) {
@@ -614,8 +798,13 @@ function render() {
     }
     ctx.globalAlpha = 1;
   } else if (layer > 0) { ctx.globalAlpha = 0.18; drawLayer(layer - 1, z, ox, oy, x0, y0, x1, y1, false); ctx.globalAlpha = 1; }
-  drawLayer(layer, z, ox, oy, x0, y0, x1, y1, true);
+  const shown = drawLayer(layer, z, ox, oy, x0, y0, x1, y1, true);
+  drawGlow(shown, z, ox, oy);
   drawLinks(z, ox, oy);
+  if (insp && insp.l === layer) {   // the block the inspector is editing
+    ctx.strokeStyle = 'rgba(120,220,255,0.95)'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(ox + insp.x * z - 1, oy + insp.y * z - 1, z + 2, z + 2); ctx.setLineDash([]);
+  }
 
   // ghosts + selection
   const hx = mouse.cx, hy = mouse.cy;
@@ -818,9 +1007,10 @@ addEventListener('keydown', (e) => {
   else if (k === 'x') setXray(!xray);
   else if (k === 'l') selectTool(LINK);
   else if (k === 'delete' || k === 'backspace') { if (sel) { deleteSel(); sel = null; } }
-  else if (k === 'escape') { sel = null; pasting = false; linkFrom = null; hideHelp(); $('menu').classList.remove('show'); }
+  else if (k === 'escape') { sel = null; pasting = false; linkFrom = null; insp = null; hideHelp(); $('menu').classList.remove('show'); }
   else if (k === 'h') { cam.x = 0; cam.y = 0; }
-  else if (k === 'g') showGrid = !showGrid;
+  else if (k === 'g') { gset.grid = !gset.grid; saveSettings(); syncSettingsUI(); }
+  else if (k === 'i') inspectAt();
   else if (k === 'm') { muted = !muted; for (let n = 0; n < 24; n++) setVoice(n); toast(muted ? 'Buzzers muted' : 'Buzzers on'); }
   else if (/^[0-9]$/.test(k)) selectTool(HOTKEYS[(+k + 9) % 10]);
 });
@@ -857,7 +1047,7 @@ const SAVE_KEY = 'bitworks-save-v1';
 let saveDue = 0;
 function markSave() { if (!saveDue) saveDue = 2; }
 function saveText() {
-  return JSON.stringify({ v: 2, cam, layer, tool, toolSet, toolVert, speedI, tick: sim.tick, chunks: BW.encodeWorld(world), links: world.links });
+  return JSON.stringify({ v: 2, cam, layer, tool, toolSet, toolVert, speedI, tick: sim.tick, chunks: BW.encodeWorld(world), links: world.links, pal: LED_COLORS.map(hexOf) });
 }
 function loadText(txt) {
   const s = JSON.parse(txt);
@@ -867,6 +1057,7 @@ function loadText(txt) {
   if (s.toolVert !== undefined) toolVert = s.toolVert & 3;
   if (s.tool) { tool.d = s.tool.d & 3; selectTool(s.tool.t || 1); }
   if (s.speedI !== undefined) setSpeed(s.speedI);
+  if (Array.isArray(s.pal)) s.pal.forEach((h, i) => { if (i < 8) setPalette(i, h); });
   setLayer(s.layer || 0);
   undoStack.length = 0; redoStack.length = 0;
 }
@@ -893,7 +1084,127 @@ $('file').onchange = async (e) => {
 let loaded = false;
 try { const s = localStorage.getItem(SAVE_KEY); if (s) { loadText(s); loaded = true; } } catch (e) { }
 if (!loaded) { BW.buildDemo(world); $('help').classList.add('show'); }
-setSpeed(speedI); setRunning(true); setLayer(layer); drawIcons();
+setSpeed(speedI); setRunning(true); setLayer(layer); updateBoard(); syncSettingsUI(); drawIcons();
+
+// ---------------------------------------------------------------- the inspector (panel on the right)
+// It shows the settings of the NEXT block you'll place - or, after pressing I over a placed block, of THAT block
+// (outlined in blue): LED color + brightness, clock speed, buzzer note, which way it faces, which layers it touches.
+// Every change is one undo step. The 8 LED colors can each be changed to any color (saved with the world).
+const pretty = (s) => s[0] + s.slice(1).toLowerCase();
+const HAS_DIR = (t) => t >= 7 && t <= 16;
+let inspSig = '';
+function inspState() {
+  if (insp) {
+    const t = world.type(insp.x, insp.y, insp.l);
+    if (t) {
+      const d = world.data(insp.x, insp.y, insp.l);
+      return { t, d: d & 3, set: d >> 2, v: world.vert(insp.x, insp.y, insp.l), block: true };
+    }
+    insp = null;   // (the block is gone)
+  }
+  return { t: tool.t, d: tool.d, set: toolSet[tool.t] || 0, v: toolVert, block: false };
+}
+function inspectAt() {
+  const t = mouse.inside ? typeAt(mouse.cx, mouse.cy) : 0;
+  if (!t) { insp = null; toast('Inspector: new blocks'); return; }
+  insp = { x: mouse.cx, y: mouse.cy, l: layer };
+  toast('Editing this ' + pretty(NAMES[t]) + ' (Esc to stop)');
+}
+const sigOf = (s) => [s.t, s.d, s.set, s.v, s.block, insp && insp.x, insp && insp.y, insp && insp.l, LED_COLORS.join()].join('|');
+function buildInspector() {
+  const s = inspState(), el = $('insp'), sig = sigOf(s);
+  if (sig === inspSig) return;
+  inspSig = sig;
+  if (s.t === LINK) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  let h = '<div class="ih">' + (s.block ? 'THIS BLOCK<button data-act="close" title="Stop editing it (Esc)">✕</button>' : 'NEW BLOCKS') + '</div>';
+  h += '<div class="in">' + pretty(NAMES[s.t]) + '</div>';
+  if (s.t === T.LED) {
+    h += '<div class="il">COLOR</div><div class="sw">';
+    for (let i = 0; i < 8; i++) h += `<button data-act="color" data-v="${i}" class="${(s.set & 7) === i ? 'on' : ''}" style="background:${hexOf(LED_COLORS[i])}" title="${ledName(i)}"></button>`;
+    h += `</div><label class="ip">change this color <input type="color" data-act="pal" value="${hexOf(LED_COLORS[s.set & 7])}"></label>`;
+    const bi = 7 - BRIGHT_ORDER.indexOf((s.set >> 3) & 7);   // the slider: left = darkest
+    h += `<div class="il">BRIGHTNESS <span>${Math.round(ledBright(s.set) * 100)}%</span></div><input type="range" min="0" max="7" data-act="bright" value="${bi}">`;
+  }
+  if (s.t === T.CLOCK) {
+    const p = s.set % PER.length;
+    h += `<div class="il">SPEED <span>${settingText(T.CLOCK, p)}</span></div><input type="range" min="0" max="${PER.length - 1}" data-act="clock" value="${p}">`;
+  }
+  if (s.t === T.BUZZER) h += `<div class="il">NOTE <span>${settingText(T.BUZZER, s.set)}</span></div><input type="range" min="0" max="23" data-act="note" value="${s.set % 24}">`;
+  if (HAS_DIR(s.t)) {
+    h += '<div class="il">FACING</div><div class="seg">';
+    for (let d = 0; d < 4; d++) h += `<button data-act="dir" data-v="${d}" class="${s.d === d ? 'on' : ''}">${'↑→↓←'[d]}</button>`;
+    h += '</div>';
+  }
+  if (s.t !== T.CROSS && s.t !== T.HEX) {
+    h += '<div class="il">TOUCHES LAYERS</div><div class="seg">';
+    for (const [v, n] of [[3, 'both'], [1, 'below'], [2, 'above'], [0, 'none']]) h += `<button data-act="vert" data-v="${v}" class="${s.v === v ? 'on' : ''}">${n}</button>`;
+    h += '</div>';
+  }
+  if (!s.block) h += '<div class="if">Press <b>I</b> over a placed block to edit it</div>';
+  el.innerHTML = h;
+}
+function inspApply(act, val) {
+  if (act === 'close') { insp = null; return; }
+  const s = inspState();
+  let d = s.d, set = s.set, v = s.v;
+  if (act === 'pal') { setPalette(set & 7, val); inspSig = sigOf(inspState()); return; }
+  if (act === 'color') set = (set & ~7) | val;
+  else if (act === 'bright') set = (set & 7) | (BRIGHT_ORDER[7 - val] << 3);
+  else if (act === 'clock' || act === 'note') set = val;
+  else if (act === 'dir') d = val;
+  else if (act === 'vert') v = val;
+  else return;
+  if (s.block) {
+    const old = world.data(insp.x, insp.y, insp.l);
+    beginGroup();
+    doSet(insp.x, insp.y, insp.l, s.t, act === 'vert' ? old : (d & 3) | (set << 2), world.st(insp.x, insp.y, insp.l), v);
+    endGroup();
+  } else {
+    tool.d = d; toolVert = v;
+    if (SETTINGS[s.t]) toolSet[s.t] = set;
+    drawIcons();
+  }
+}
+function inspLabel(input) {   // a slider moved: just update the number above it (rebuilding would stop the drag)
+  const lab = input.previousElementSibling && input.previousElementSibling.querySelector && input.previousElementSibling.querySelector('span');
+  const s = inspState();
+  if (lab) lab.textContent = input.dataset.act === 'bright' ? Math.round(ledBright(s.set) * 100) + '%' : settingText(s.t, s.set);
+}
+$('insp').onclick = (e) => {
+  const a = e.target.dataset && e.target.dataset.act;
+  if (a && e.target.tagName === 'BUTTON') inspApply(a, +e.target.dataset.v);
+};
+$('insp').oninput = (e) => {
+  const a = e.target.dataset && e.target.dataset.act;
+  if (!a) return;
+  inspApply(a, a === 'pal' ? e.target.value : +e.target.value);
+  if (a !== 'pal') { inspLabel(e.target); inspSig = sigOf(inspState()); }
+};
+// (let go of a slider: give the keyboard back to the game, so WASD and the hotkeys work again)
+$('insp').onchange = (e) => { if (e.target.blur) e.target.blur(); };
+
+// ---------------------------------------------------------------- global settings (☰ → Settings)
+function syncSettingsUI() {
+  const box = $('gset');
+  const inputs = box.querySelectorAll ? box.querySelectorAll('input') : [];
+  for (const el of inputs) {
+    const k = el.dataset.g;
+    if (k === 'grid') el.checked = gset.grid;
+    else el.value = Math.round(gset[k] * 100);
+  }
+}
+$('bSettings').onclick = () => $('gset').classList.toggle('show');
+$('gset').oninput = (e) => {
+  const k = e.target.dataset && e.target.dataset.g;
+  if (!k) return;
+  if (k === 'grid') gset.grid = e.target.checked;
+  else gset[k] = +e.target.value / 100;
+  if (k === 'dark') updateBoard();
+  if (k === 'volume' && master) master.gain.value = 0.24 * gset.volume;
+  saveSettings();
+};
+$('gset').onchange = (e) => { if (e.target.blur) e.target.blur(); };
 
 // ---------------------------------------------------------------- the hint line above the dock
 function hintText() {
@@ -911,6 +1222,7 @@ function hintText() {
   let h = `<b>${NAMES[t][0] + NAMES[t].slice(1).toLowerCase()}</b>${s ? ' (' + s + ')' : ''} — ${DESC[t]}`;
   if (t === T.LED) h += ' · F color · B brightness';
   else if (SETTINGS[t]) h += ' · F to change';
+  if (placed) h += ' · I to edit';
   if (placed || v !== 3) h += ` · touches ${VNAME[v]} (V)`;
   return h;
 }
@@ -955,6 +1267,7 @@ function frame(now) {
   render();
 
   $('coords').textContent = `${mouse.cx}, ${mouse.cy}`;
+  buildInspector();
   const h = hintText();
   if (h !== lastHint) { $('hint').innerHTML = h; lastHint = h; }
 
