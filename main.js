@@ -552,9 +552,22 @@ sim.onBuzzReset = (b) => { for (let n = 0; n < 24; n++) { buzzCount[n] = b[n]; s
 const MIP_OFF = [0, 4096, 5120, 5376, 5440, 5456, 5460], MIP_N = 5461;
 const mip = { lr: new Float32Array(MIP_N), lg: new Float32Array(MIP_N), lb: new Float32Array(MIP_N), ps: new Float32Array(MIP_N), pm: new Float32Array(MIP_N),
   br: new Float32Array(MIP_N), bg: new Float32Array(MIP_N), bb: new Float32Array(MIP_N), oc: new Float32Array(MIP_N), nl: new Float32Array(MIP_N) };
-// where shrink level k sits in an atlas: x, y, size
-const mipRect = (k) => k === 0 ? [0, 0, 64] : [64, 64 - 2 * (64 >> k), 64 >> k];
-const AW = 96;
+// where shrink level k sits in an atlas: x, y, size. (v2: a 2-pixel gap round every level, filled with a copy of its
+// edge - drawn smoothly, a level used to borrow a bit of the level NEXT to it in the atlas: glowing spots at chunk
+// edges where there were no lights - Sixten: "light spots where no lights were")
+const MIP_AT = [[0, 0, 64], [66, 0, 32], [66, 34, 16], [84, 34, 8], [84, 44, 4], [90, 44, 2], [94, 44, 1]];
+const mipRect = (k) => MIP_AT[k];
+const AW = 100;
+// copy the edge pixels of the square at x, y (size s) one pixel outward, so smooth drawing reads its own edge there
+function padEdge(px, x, y, s) {
+  for (let i = -1; i <= s; i++) {
+    const cx = Math.min(s - 1, Math.max(0, i));
+    if (y > 0) px[(y - 1) * AW + x + i] = px[y * AW + x + cx];
+    if (y + s < CS) px[(y + s) * AW + x + i] = px[(y + s - 1) * AW + x + cx];
+    if (x > 0 && i >= 0 && i < s) px[(y + i) * AW + x - 1] = px[(y + i) * AW + x];
+    if (i >= 0 && i < s) px[(y + i) * AW + x + s] = px[(y + i) * AW + x + s - 1];
+  }
+}
 const rgba = (r, g, b, a) => ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
 function paintChunk(c) {
   if (!c.canvas) {
@@ -611,6 +624,7 @@ function paintChunk(c) {
       lp[at] = PM > 0 ? rgba(hr * PM * 255 | 0, hg * PM * 255 | 0, hb * PM * 255 | 0, 255) : 0;   // (for the glow: as bright as its brightest light)
     }
   }
+  for (let k = 0; k <= 6; k++) { const [x, y, s] = MIP_AT[k]; padEdge(px, x, y, s); padEdge(lp, x, y, s); }
   c.g.putImageData(c.img, 0, 0);
   if (lit || c.lit) c.lg.putImageData(c.limg, 0, 0);
   c.lit = lit;
@@ -737,8 +751,10 @@ function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
 // MEDIUM ZOOM: the mixed light (2x2 blocks added together) is ADDED over the blocks - more of it the further out you
 // are (none from 16 px per block up). Lights of one color stay that color; red, green and blue side by side go white.
 function drawLightMix(chunks, z, ox, oy) {
-  if (!chunks || z >= 16 || z < 1) return;
-  const a = Math.min(0.85, (16 - z) / 15 * 0.85), [rx, ry, rs] = mipRect(1);
+  // (v2: only when blocks are tiny - under 4 pixels. Closer than that it painted each light's color onto the unlit
+  // blocks next to it, in 2x2 squares: colored patches where there were no lights)
+  if (!chunks || z >= 4 || z < 1) return;
+  const a = Math.min(0.85, (4 - z) / 3 * 0.85), [rx, ry, rs] = mipRect(1);
   let any = false;
   for (const c of chunks) if (c.lit) { any = true; break; }
   if (!any) return;
@@ -759,7 +775,8 @@ function drawGlow(chunks, z, ox, oy) {
   glowG.setTransform(1, 0, 0, 1, 0, 0); glowG.clearRect(0, 0, gw, gh);
   glowG.imageSmoothingEnabled = true;
   // (the glow comes from the lights mixed 2x2 - or more, far out: where red, green and blue glows meet, it's white)
-  const [rx, ry, rs] = mipRect(z >= 1 ? 1 : Math.max(1, Math.min(6, Math.floor(Math.log2(1 / z)) + 1)));
+  // (v2: close up, from each light's OWN pixel - the mixed 2x2 one put the glow up to half a block off its light)
+  const [rx, ry, rs] = mipRect(z >= 4 ? 0 : z >= 1 ? 1 : Math.max(1, Math.min(6, Math.floor(Math.log2(1 / z)) + 1)));
   for (const c of chunks) if (c.lit) glowG.drawImage(c.lcanvas, rx, ry, rs, rs, (ox + c.cx * CS * z) * S, (oy + c.cy * CS * z) * S, CS * z * S, CS * z * S);
   if (FILTER_OK === null) { ctx.filter = 'blur(2px)'; FILTER_OK = ctx.filter === 'blur(2px)'; ctx.filter = 'none'; }
   ctx.save();
