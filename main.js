@@ -257,6 +257,7 @@ const cam = { x: 9, y: 7, z: 34 };
 const tool = { t: T.WIRE, d: 1 };
 const toolSet = { 5: 4, 17: 0, 19: 0 };
 let toolVert = 3, layer = 0, xray = false;   // xray = see through all layers
+let hideWires = false;   // T: wires and crossings not drawn (only the parts show)
 const SPEEDS = [1, 2, 5, 10, 20, 40, 60, 120, 250, 500, 1000, 2500, 5000, 10000, Infinity];
 let speedI = 4, running = true;
 let insp = null;   // the inspector panel edits: null = the next block you place, {x, y, l} = one placed block (I)
@@ -584,7 +585,7 @@ function paintChunk(c) {
   for (let i = 0; i < CN; i++) {
     const t = ty[i], a = ((i >> CSH) * AW) + (i & CM);
     lr[i] = lg[i] = lb[i] = ps[i] = pm[i] = br[i] = bg[i] = bb[i] = oc[i] = nl[i] = 0;
-    if (!t) { px[a] = 0; lp[a] = 0; continue; }
+    if (!t || (hideWires && t <= 2)) { px[a] = 0; lp[a] = 0; continue; }   // (wires hidden: drawn as empty board)
     let on;
     if (t === 1) { const n = net[i]; on = n >= 0 && n < nn && nOn[n] > 0 ? 1 : 0; }
     else if (t === 2) { const x = net[i], y = c.netV[i]; on = (x >= 0 && x < nn && nOn[x] > 0) || (y >= 0 && y < nn && nOn[y] > 0) ? 1 : 0; }
@@ -721,7 +722,7 @@ function drawLayer(l, z, ox, oy, x0, y0, x1, y1, main) {
     const ty = c.type, da = c.data;
     for (let ly = ly0; ly <= ly1; ly++) for (let lx = lx0; lx <= lx1; lx++) {
       const i = (ly << CSH) | lx, t = ty[i];
-      if (!t) continue;
+      if (!t || (hideWires && t <= 2)) continue;   // (wires and crossings hidden: T)
       const x = bx + lx, y = by + ly, sx = ox + x * z, sy = oy + y * z;
       let spr;
       if (t === 1) {
@@ -823,6 +824,13 @@ function drawLinks(z, ox, oy) {
     }
   }
   ctx.globalAlpha = 1;
+}
+// HIDE WIRES (Sixten: "make a button to hide wires"): wires and crossings aren't drawn - near or far, glow and all - so
+// only the parts show (LED screens, gates...). They still work; T or the button brings them back.
+function setHideWires(v) {
+  hideWires = v; $('bWires').classList.toggle('on', v);
+  for (const c of world.chunks.values()) c.dirty = true;   // (the far view is painted per chunk: repaint them all)
+  toast(v ? 'Wires hidden (T to show them)' : 'Wires shown');
 }
 function setXray(v) {
   xray = v; $('bXray').classList.toggle('on', v);
@@ -1087,6 +1095,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'q' || k === 'pagedown') setLayer(layer - 1);
   else if (k === 'p') pickBlock();
   else if (k === 'x') setXray(!xray);
+  else if (k === 't') setHideWires(!hideWires);
   else if (k === 'l') selectTool(LINK);
   else if (k === 'delete' || k === 'backspace') { if (sel) { deleteSel(); sel = null; } }
   else if (k === 'escape') { sel = null; pasting = false; linkFrom = null; insp = null; hideHelp(); $('menu').classList.remove('show'); }
@@ -1111,6 +1120,7 @@ $('bFast').onclick = () => setSpeed(speedI + 1);
 $('bUp').onclick = () => setLayer(layer + 1);
 $('bDown').onclick = () => setLayer(layer - 1);
 $('bXray').onclick = () => setXray(!xray);
+$('bWires').onclick = () => setHideWires(!hideWires);
 $('bMenu').onclick = () => $('menu').classList.toggle('show');
 $('bHelp').onclick = () => { $('menu').classList.remove('show'); toggleHelp(); };
 $('help').onclick = hideHelp;
